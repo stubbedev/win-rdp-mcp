@@ -4,8 +4,8 @@ import (
 	"context"
 	json "encoding/json/v2"
 	"errors"
-	"flag"
 	"fmt"
+	"github.com/spf13/pflag"
 	"net"
 	"net/http"
 	"net/netip"
@@ -41,6 +41,12 @@ func run(argv []string) error {
 	// have to look like a server invocation.
 	if len(argv) > 0 {
 		switch argv[0] {
+		case "control":
+			// The controller is the other half of the system: it runs on the
+			// operator's machine, drives the target over RDP, and is the MCP
+			// server the AI connects to. It is Linux-only (it shells out to
+			// xfreerdp/xdotool); controlMain on other platforms says so.
+			return controlMain(argv[1:])
 		case "install":
 			return installScheduledTask()
 		case "uninstall":
@@ -57,6 +63,10 @@ func run(argv []string) error {
 
 	opts, err := parseOptions(argv)
 	if err != nil {
+		// --help/-h is a clean exit, not a failure; pflag has already printed.
+		if errors.Is(err, pflag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	return serve(opts)
@@ -66,6 +76,7 @@ func run(argv []string) error {
 
 type options struct {
 	transport string
+	dir       string // exchange directory for -transport dir
 	host      string
 	port      int
 	debug     bool
@@ -100,30 +111,34 @@ const (
 // built-in default, then the config file, then the environment, then an
 // explicitly passed flag.
 func parseOptions(argv []string) (options, error) {
-	fs := flag.NewFlagSet("win-rdp-mcp", flag.ContinueOnError)
+	// GNU-style flags: every option has a --long form, common ones a -short
+	// alias too. pflag gives that (the stdlib flag package cannot).
+	fs := pflag.NewFlagSet("win-rdp-mcp", pflag.ContinueOnError)
+	fs.SortFlags = false
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "win-rdp-mcp %s — control a Windows desktop over MCP\n\n"+
-			"Usage:\n  win-rdp-mcp [flags]\n  win-rdp-mcp install | uninstall | health\n\nFlags:\n", Version)
-		fs.PrintDefaults()
+			"Usage:\n  win-rdp-mcp [flags]\n  win-rdp-mcp control | install | uninstall | health\n\nFlags:\n", Version)
+		fmt.Fprint(fs.Output(), fs.FlagUsages())
 	}
 
 	var (
-		transport           = fs.String("transport", "streamable-http", "transport: stdio or streamable-http")
-		host                = fs.String("host", "127.0.0.1", "bind address (0.0.0.0 exposes the server to the network)")
-		port                = fs.Int("port", 8090, "bind port")
-		debug               = fs.Bool("debug", false, "log every request")
-		configPath          = fs.String("config", "", "path to "+configFileName)
-		authKey             = fs.String("auth-key", "", "API key clients must send as `Authorization: Bearer <key>`")
+		transport           = fs.StringP("transport", "t", "streamable-http", "transport: stdio, streamable-http, or dir")
+		dir                 = fs.String("dir", "", "for --transport dir: the exchange directory (the controller's redirected drive)")
+		host                = fs.StringP("host", "H", "127.0.0.1", "bind address (0.0.0.0 exposes the server to the network)")
+		port                = fs.IntP("port", "p", 8090, "bind port")
+		debug               = fs.BoolP("debug", "d", false, "log every request")
+		configPath          = fs.StringP("config", "c", "", "path to "+configFileName)
+		authKey             = fs.StringP("auth-key", "k", "", "API key clients must send as `Authorization: Bearer <key>`")
 		allowInsecureRemote = fs.Bool("allow-insecure-remote", false, "allow a non-loopback bind with no authentication (dangerous)")
-		sslCertFile         = fs.String("ssl-certfile", "", "TLS certificate file; enables HTTPS together with -ssl-keyfile")
+		sslCertFile         = fs.String("ssl-certfile", "", "TLS certificate file; enables HTTPS together with --ssl-keyfile")
 		sslKeyFile          = fs.String("ssl-keyfile", "", "TLS private key file")
 		oauthClientID       = fs.String("oauth-client-id", "", "pre-provisioned OAuth client ID")
 		oauthClientSecret   = fs.String("oauth-client-secret", "", "pre-provisioned OAuth client secret")
-		enableAll           = fs.Bool("enable-all", false, "enable every tool, including the destructive tier 3")
-		enableTier3         = fs.Bool("enable-tier3", false, "enable the destructive tier 3 tools")
-		disableTier2        = fs.Bool("disable-tier2", false, "disable the interactive tier 2 tools")
+		enableAll           = fs.BoolP("enable-all", "a", false, "enable every tool, including the destructive tier 3")
+		enableTier3         = fs.BoolP("enable-tier3", "3", false, "enable the destructive tier 3 tools")
+		disableTier2        = fs.BoolP("disable-tier2", "2", false, "disable the interactive tier 2 tools")
 		toolsFlag           = fs.String("tools", "", "comma-separated tools to enable (highest precedence)")
-		excludeTools        = fs.String("exclude-tools", "", "comma-separated tools to disable")
+		excludeTools        = fs.StringP("exclude-tools", "x", "", "comma-separated tools to disable")
 		ipAllowlist         = fs.String("ip-allowlist", "", "comma-separated IPs/CIDRs allowed to connect")
 	)
 	if err := fs.Parse(argv); err != nil {
@@ -131,7 +146,7 @@ func parseOptions(argv []string) (options, error) {
 	}
 
 	explicit := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	fs.Visit(func(f *pflag.Flag) { explicit[f.Name] = true })
 
 	cfg, err := loadConfig(discoverConfigPath(*configPath))
 	if err != nil {
@@ -140,6 +155,7 @@ func parseOptions(argv []string) (options, error) {
 
 	opts := options{
 		transport:  *transport,
+		dir:        *dir,
 		host:       *host,
 		port:       *port,
 		debug:      *debug,
@@ -228,8 +244,16 @@ func pickBool(configSet, configValue, flagSet, flagValue bool) bool {
 func validateOptions(opts options) error {
 	switch opts.transport {
 	case "stdio", "streamable-http":
+	case "dir":
+		// The dir transport is reached only through the controller's redirected
+		// drive, which is scoped to the authenticated RDP session — there is no
+		// listener to gate, so the network rules below do not apply.
+		if opts.dir == "" {
+			return errors.New("-transport dir requires -dir <exchange directory>")
+		}
+		return nil
 	default:
-		return fmt.Errorf("unknown transport %q (use stdio or streamable-http)", opts.transport)
+		return fmt.Errorf("unknown transport %q (use stdio, streamable-http, or dir)", opts.transport)
 	}
 
 	if (opts.oauthClientID == "") != (opts.oauthClientSecret == "") {
@@ -263,6 +287,16 @@ func validateOptions(opts options) error {
 // ── Serving ──────────────────────────────────────────────────────────────────
 
 func serve(opts options) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// The dir transport is a plain file request/response loop, not an MCP
+	// server — it reuses the handlers directly (see dirserve.go), so it skips
+	// the mcp.Server setup entirely.
+	if opts.transport == "dir" {
+		return serveDir(ctx, opts.dir, opts.enabled)
+	}
+
 	srv := mcp.NewServer(
 		&mcp.Implementation{Name: "win-rdp-mcp", Version: Version},
 		&mcp.ServerOptions{Instructions: instructions(opts)},
@@ -270,9 +304,6 @@ func serve(opts options) error {
 	if err := registerTools(srv, opts.enabled); err != nil {
 		return err
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	if opts.transport == "stdio" {
 		if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {

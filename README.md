@@ -1,422 +1,342 @@
 # win-rdp-mcp
 
-Control a Windows machine over the [Model Context Protocol](https://modelcontextprotocol.io/):
-screenshots, synthetic mouse and keyboard, window management, PowerShell, file
-transfer, processes, services, the registry, scheduled tasks, the event log and
-network checks.
+Control a Windows machine over RDP, exposed as [Model Context Protocol](https://modelcontextprotocol.io/)
+tools — screenshots, mouse and keyboard, PowerShell, files, processes, services,
+the registry, scheduled tasks, the event log and network checks.
 
-A Go port of [dddabtc/winremote-mcp](https://github.com/dddabtc/winremote-mcp) —
-same tools, same tier model, same config file, as a single static binary with no
-Python runtime to install on the target machine.
+**You give it only RDP credentials.** It connects, drives the desktop directly,
+pushes a small agent into the session for the system internals, and exposes the
+whole thing to your AI client. Nothing to pre-install on the target — no SMB, no
+WinRM, no open port beyond RDP.
 
-**Run it on the Windows machine you want to control.**
-
-```powershell
-# one-off, no install
-npx -y @stubbedev/win-rdp-mcp
-
-# or grab the binary from the releases page and run it
-.\win-rdp-mcp.exe
-```
-
-That starts a Streamable HTTP MCP server on `http://127.0.0.1:8090/mcp`.
+Originally a Go port of [dddabtc/winremote-mcp](https://github.com/dddabtc/winremote-mcp);
+it has since grown the RDP controller so the target needs no agent installed.
 
 ---
 
-## Contents
+## How it works
 
-- [Install](#install)
-- [Connect a client](#connect-a-client)
-- [Security model](#security-model)
-- [Tools](#tools)
-- [Configuration](#configuration)
-- [Running as a service](#running-as-a-service)
-- [Development](#development)
-- [Differences from winremote-mcp](#differences-from-winremote-mcp)
+Two halves, one binary:
+
+```
+  your machine (Linux)                          the Windows target
+┌──────────────────────────────┐              ┌──────────────────────────┐
+│ win-rdp-mcp control          │              │                          │
+│  the MCP server your AI uses │              │                          │
+│                              │── RDP/3389 ──▶│  live desktop session    │
+│  • xfreerdp holds a session  │   screenshots │  (logged in for you)     │
+│    in a headless Xvfb        │   + input     │                          │
+│  • screenshots + mouse/keys  │              │                          │
+│    driven locally            │              │                          │
+│                              │── drive ─────▶│  win-rdp-mcp.exe (agent) │
+│  • pushes the agent over the │   redirection │   pushed + run in-session│
+│    redirected drive, talks   │◀── files ────▶│   window tree, shell,    │
+│    to it via files on it     │   over RDP    │   registry, files, ...   │
+└──────────────────────────────┘              └──────────────────────────┘
+```
+
+- The **desktop tier** — `Snapshot`, `Click`, `Type`, `Move`, `Scroll`,
+  `Shortcut` — is driven straight over RDP with **no footprint on the target**.
+- The **system tier** — window enumeration with coordinates, `Shell`, files,
+  registry, services, tasks, event log, OCR — is served by an agent the
+  controller **pushes into the RDP session over drive redirection** and talks to
+  through files on that same redirected drive. Still nothing but RDP on the wire.
+
+The agent can also run standalone on the target (stdio or HTTP) if you'd rather
+install it — see [Running the agent directly](#running-the-agent-directly).
 
 ---
 
-## Install
+## Quickstart
 
-### One-click, for Claude Desktop
-
-Download `win-rdp-mcp_windows_amd64.mcpb` from the
-[latest release](https://github.com/stubbedev/win-rdp-mcp/releases/latest) and
-open it. Claude Desktop installs the bundled binary and wires up the stdio
-transport itself — no JSON editing, no PATH.
-
-### npm / npx
-
-```powershell
-npx -y @stubbedev/win-rdp-mcp            # always the newest release
-npm install -g @stubbedev/win-rdp-mcp    # or keep it around
-```
-
-The wrapper downloads the prebuilt binary for your platform on first run and
-then hands stdio straight to it, so it adds no per-message latency.
-
-### Prebuilt binary
-
-Grab `win-rdp-mcp_windows_amd64.exe` (or `arm64`, `386`) from the
-[releases page](https://github.com/stubbedev/win-rdp-mcp/releases/latest).
-It is a single static file with no dependencies.
-
-### Go
+On your Linux machine:
 
 ```sh
-go install github.com/stubbedev/win-rdp-mcp@latest
+# with Nix — bundles xfreerdp/xdotool/imagemagick/xvfb, nothing else to install
+nix run github:stubbedev/win-rdp-mcp -- control \
+  --target 192.168.1.50 --user administrator
+
+# the password comes from the environment (kept out of your shell history/args)
+export WIN_RDP_TARGET_PASS='...'
 ```
 
-### Nix
+That starts an MCP server on stdio. Point your client at it (below). The first
+system-tool call waits a few seconds while the agent bootstraps; the desktop
+tools work immediately.
+
+### Requirements (controller host)
+
+The controller shells out to `xfreerdp` (FreeRDP 3), `xdotool`, `import`
+(ImageMagick) and `Xvfb`. The Nix package and dev shell bundle them. Installing
+another way, get them from your package manager, e.g. on Debian/Ubuntu:
 
 ```sh
-nix run github:stubbedev/win-rdp-mcp
-nix profile install github:stubbedev/win-rdp-mcp
+sudo apt install freerdp3-x11 xdotool imagemagick xvfb
 ```
 
-Builds are pushed to a public binary cache. Add `--accept-flake-config` to use
-it, or put these in your `nix.conf`:
-
-```
-extra-substituters = https://nix.stubbe.dev/default
-extra-trusted-public-keys = default:9P4FePqHV1rGv5NDBun0GN26y83pcaaMr/NHZrxKaac=
-```
-
-> The server builds and its tests run on Linux and macOS too — that is how CI
-> checks it — but the desktop tools only *do* anything on Windows. Everywhere
-> else they return "this tool is only available when the server runs on Windows".
+The target account must be able to log in over RDP. That's it — no admin share,
+no WinRM, no firewall change.
 
 ---
 
-## Connect a client
+## Connect an MCP client
 
-### Claude Code / Claude Desktop — local, over stdio
+The controller *is* the MCP server; your client launches it. It runs on your
+machine, not the target.
+
+### Claude Code / Claude Desktop
 
 ```json
 {
   "mcpServers": {
     "windows": {
       "command": "win-rdp-mcp",
-      "args": ["-transport", "stdio"]
+      "args": ["control", "--target", "192.168.1.50", "--user", "administrator"],
+      "env": { "WIN_RDP_TARGET_PASS": "your-password" }
     }
   }
 }
 ```
 
-### Any client — remote, over HTTP
-
-On the Windows machine:
-
-```powershell
-.\win-rdp-mcp.exe -host 0.0.0.0 -port 8090 -auth-key YOUR_SECRET_KEY
-```
-
-Then point the client at it:
+Or, without installing anything, use the Nix runner as the command:
 
 ```json
 {
   "mcpServers": {
     "windows": {
-      "type": "http",
-      "url": "http://192.168.1.100:8090/mcp",
-      "headers": { "Authorization": "Bearer YOUR_SECRET_KEY" }
+      "command": "nix",
+      "args": ["run", "github:stubbedev/win-rdp-mcp", "--", "control",
+               "--target", "192.168.1.50", "--user", "administrator"],
+      "env": { "WIN_RDP_TARGET_PASS": "your-password" }
     }
   }
 }
 ```
 
-### HTTPS
+---
 
-```powershell
-# self-signed, for a LAN
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+## Install
 
-.\win-rdp-mcp.exe -host 0.0.0.0 -port 8090 `
-  -auth-key YOUR_SECRET_KEY `
-  -ssl-certfile cert.pem -ssl-keyfile key.pem
+### Nix (recommended — bundles the runtime tools)
+
+```sh
+nix run github:stubbedev/win-rdp-mcp -- control --target ... --user ...
+nix profile install github:stubbedev/win-rdp-mcp
 ```
 
-### OAuth
+Builds are pushed to a public binary cache. Add `--accept-flake-config`, or put
+these in your `nix.conf`:
 
-For clients that speak OAuth rather than a static key. The client is
-pre-provisioned: you configure the same ID and secret on both ends, and dynamic
-registration stays disabled.
-
-```powershell
-.\win-rdp-mcp.exe -host 0.0.0.0 -port 8090 `
-  -ssl-certfile cert.pem -ssl-keyfile key.pem `
-  -oauth-client-id my-client -oauth-client-secret my-secret
+```
+extra-substituters = https://nix.stubbe.dev/default
+extra-trusted-public-keys = default:9P4FePqHV1rGv5NDBun0GN26y83pcaaMr/NHZrxKaac=
 ```
 
-The server publishes RFC 8414 metadata at
-`/.well-known/oauth-authorization-server` and runs the authorization-code flow
-with PKCE (S256 only). Redirect URIs must be loopback.
+### Go
+
+```sh
+go install github.com/stubbedev/win-rdp-mcp@latest
+# then install xfreerdp3 / xdotool / imagemagick / xvfb yourself
+```
+
+### npm / npx
+
+```sh
+npx -y @stubbedev/win-rdp-mcp control --target ... --user ...
+```
+
+Downloads the prebuilt binary for your platform on first run. You still need the
+runtime tools installed (the npm package doesn't bundle them).
+
+> Everything builds and tests on Linux, macOS and Windows — that is how CI checks
+> it — but the **controller runs on Linux** (it needs xfreerdp/xdotool), and the
+> **agent binary is for Windows**.
 
 ---
 
-## Security model
+## Flags
 
-This server hands an AI agent a keyboard, a mouse and — if you let it — a
-PowerShell prompt on a real machine. The defaults reflect that.
+GNU-style: every option has a `--long` form; the common ones a `-short` alias.
 
-### Tiers
+### Controller (`win-rdp-mcp control`)
 
-Tools are grouped by how much damage they can do. **Tier 1 and 2 are on by
-default; tier 3 is not.**
-
-| Tier | What it does | Enable with |
-|------|--------------|-------------|
-| **1** — read-only | Screenshots, OCR, screen recording, window and process listing, registry reads, service and task listing, event log, network checks | on by default |
-| **2** — desktop interaction | Click, Type, Move, Scroll, Shortcut, FocusWindow, MinimizeAll, Scrape, ReconnectSession | on by default (`-disable-tier2` to turn off) |
-| **3** — destructive | Shell, App, PlaySound, FileRead/Write/Download/Upload, KillProcess, RegWrite, ServiceStart/Stop, TaskCreate/Delete, SetClipboard, LockScreen | `-enable-tier3` or `-enable-all` |
-
-Or bypass tiers entirely:
-
-```powershell
-.\win-rdp-mcp.exe -tools Snapshot,Click,Type      # exactly these
-.\win-rdp-mcp.exe -enable-all -exclude-tools Shell  # everything but one
+```
+-t, --target HOST[:PORT]   target RDP host (required)
+-u, --user NAME            RDP username (required)
+-D, --domain NAME          RDP domain (blank for a local account)
+-p, --pass-file PATH       file holding the password (else $WIN_RDP_TARGET_PASS)
+-W, --width N              session width  (default 1280)
+-H, --height N             session height (default 800)
+    --agent-exe PATH       Windows agent to push (default ./win-rdp-mcp.exe)
+    --no-agent             desktop tools only; don't push the in-session agent
+-d, --debug                log RDP + bootstrap detail
+-a, --enable-all           enable every tool, including destructive tier 3
+-3, --enable-tier3         enable the destructive tier 3 tools
+-2, --disable-tier2        disable the interactive tier 2 tools
 ```
 
-An unknown name in either list is a hard error, not a silent no-op.
+### Agent (`win-rdp-mcp`, runs on the target)
 
-### Refusals
+```
+-t, --transport stdio|streamable-http|dir   default streamable-http
+    --dir PATH                              exchange dir for --transport dir
+-H, --host / -p, --port                     bind address (default 127.0.0.1:8090)
+-k, --auth-key KEY                          also $WIN_RDP_MCP_AUTH_KEY
+    --allow-insecure-remote                 non-loopback bind with no auth (danger)
+    --ssl-certfile / --ssl-keyfile          enable HTTPS
+    --oauth-client-id / --oauth-client-secret
+-a, --enable-all  -3, --enable-tier3  -2, --disable-tier2
+    --tools / -x, --exclude-tools           comma-separated
+    --ip-allowlist                          comma-separated IPs/CIDRs
+-d, --debug
+```
 
-The server will not start in these configurations:
-
-- **A non-loopback bind with no authentication.** Add `-auth-key`, configure
-  OAuth, or bind to `127.0.0.1`. `-allow-insecure-remote` overrides this for a
-  trusted lab LAN.
-- **Tier 3 on a non-loopback bind with no authentication.** `-allow-insecure-remote`
-  does *not* override this one. Shell plus an open port is pre-auth remote code
-  execution.
-
-### Other guards
-
-- **IP allowlist** — `-ip-allowlist 192.168.1.0/24` restricts who may connect at
-  all. `/health` stays reachable so a load-balancer probe needs no entry.
-- **SSRF** — `Scrape` and `PlaySound` refuse non-public targets (loopback,
-  private ranges, link-local, CGNAT) and refuse to follow redirects, so neither
-  can be used to probe the Windows host's own network.
-- **PowerShell injection** — every value interpolated into a PowerShell command
-  is wrapped as a single-quoted string with its quotes doubled, and `TaskCreate`
-  accepts only a fixed vocabulary of schedule types.
-- **Killing by name is exact.** Upstream matched process names at a similarity
-  threshold, which scores `notepad` against `notepad++` at 87 — high enough to
-  kill software you never named. Here only the exact name matches, with or
-  without `.exe`.
+Subcommands: `control`, `install`, `uninstall`, `health`.
 
 ---
 
 ## Tools
 
-45 tools. Everything a call returns is prefixed with `[task:<id>]`, which
-`GetTaskStatus` and `CancelTask` take.
+45 tools. Every result is prefixed `[task:<id>]`, which `GetTaskStatus` and
+`CancelTask` take.
 
-### Desktop
+**Desktop** (driven over RDP, no target footprint): `Snapshot`,
+`AnnotatedSnapshot`, `Click`, `Type`, `Scroll`, `Move`, `Shortcut`, `Wait`,
+`OCR`, `ScreenRecord`, `LockScreen`, `ReconnectSession`, `FocusWindow`,
+`MinimizeAll`, `App`.
 
-| Tool | What it does |
-|------|--------------|
-| `Snapshot` | Screenshot plus the window list and the foreground window's controls |
-| `AnnotatedSnapshot` | The same, with numbered red boxes drawn on each control |
-| `Click` | Click, double-click or hover at a coordinate |
-| `Type` | Type text, optionally clicking first, clearing, or pressing Enter |
-| `Scroll` | Scroll vertically or horizontally |
-| `Move` | Move the pointer, or drag |
-| `Shortcut` | A key chord, e.g. `ctrl+shift+esc` |
-| `Wait` | Pause between UI actions |
-| `OCR` | Read text off the screen or a region |
-| `ScreenRecord` | Record up to 10s as an animated GIF |
-| `LockScreen` | Lock the workstation |
-| `ReconnectSession` | Attach a disconnected session to the console via `tscon` |
+**System** (via the in-session agent): `Shell`, `ListProcesses`, `KillProcess`,
+`GetSystemInfo`, `ServiceList/Start/Stop`, `TaskList/Create/Delete`, `EventLog`,
+`RegRead`, `RegWrite`, `FileRead/Write/List/Search/Download/Upload`,
+`GetClipboard`, `SetClipboard`, `Notification`, `PlaySound`.
 
-### Windows and apps
+**Network**: `Ping`, `PortCheck`, `NetConnections`, `Scrape`.
 
-`FocusWindow`, `MinimizeAll`, `App` (launch / switch / resize),
-`GetClipboard`, `SetClipboard`, `Notification`, `PlaySound`
+**Tasks**: `GetTaskStatus`, `GetRunningTasks`, `CancelTask`.
 
-### System
-
-`Shell` (PowerShell), `ListProcesses`, `KillProcess`, `GetSystemInfo`,
-`ServiceList`, `ServiceStart`, `ServiceStop`, `TaskList`, `TaskCreate`,
-`TaskDelete`, `EventLog`, `RegRead`, `RegWrite`
-
-### Files
-
-`FileRead`, `FileWrite`, `FileList`, `FileSearch`, `FileDownload`, `FileUpload`
-
-### Network
-
-`Ping`, `PortCheck`, `NetConnections`, `Scrape`
-
-### Tasks
-
-`GetTaskStatus`, `GetRunningTasks`, `CancelTask`
-
-### Concurrency
-
-Tools are grouped by what they contend on, and each group has its own budget.
-Desktop tools hold an **exclusive** lock — two synthetic clicks at once are two
-clicks in the wrong places — while queries, file operations and network checks
-run in parallel.
-
-| Category | Concurrent |
-|----------|-----------|
-| desktop | 1 |
-| shell | 3 |
-| file | 5 |
-| network | 5 |
-| query | 10 |
-
-A tool that waits more than 30s for its slot fails rather than hanging the
-client.
+`Snapshot` returns the screenshot; once the agent is up it also carries the
+window and control list (with coordinates) so a model can aim clicks by element
+rather than by guessing pixels.
 
 ---
 
-## Configuration
+## Security model
 
-Flags, environment and a TOML file all work. Precedence, lowest to highest:
-**built-in default → config file → environment → command-line flag.**
+This hands an AI a keyboard, a mouse and — if you let it — a PowerShell prompt on
+a real machine. The defaults reflect that.
 
-The config file is looked up as `-config <path>`, then `./win-rdp-mcp.toml`,
-then `~/.config/win-rdp-mcp/win-rdp-mcp.toml`. See
-[`win-rdp-mcp.example.toml`](win-rdp-mcp.example.toml) for the annotated
-version.
+### Tiers
 
-```toml
-[server]
-host = "0.0.0.0"
-port = 8090
-auth_key = "change-me"
+**Tier 1 (read-only) and tier 2 (desktop interaction) are on by default; tier 3
+is not.**
 
-[security]
-ip_allowlist = ["192.168.1.0/24"]
-enable_tier3 = true
+| Tier | What it does | Enable with |
+|------|--------------|-------------|
+| **1** — read-only | screenshots, OCR, recording, listings, registry reads, event log, network checks | on by default |
+| **2** — desktop | Click, Type, Move, Scroll, Shortcut, FocusWindow, MinimizeAll, Scrape, ReconnectSession | on by default (`--disable-tier2` / `-2` to turn off) |
+| **3** — destructive | Shell, App, PlaySound, File writes/reads, KillProcess, RegWrite, Service control, Task create/delete, SetClipboard, LockScreen | `--enable-tier3` / `-3`, or `--enable-all` / `-a` |
 
-[tools]
-exclude = ["ScreenRecord"]
-```
+The tier chosen on the controller is reproduced on the pushed agent.
 
-An unknown key in the file is an error — a typo must not silently leave the
-server less locked down than you meant.
+### Credentials
 
-### Flags
+Pass the RDP password by `--pass-file` or `$WIN_RDP_TARGET_PASS`, never on the
+command line (argv is world-readable via `ps`).
 
-```
--transport stdio|streamable-http   default streamable-http
--host, -port                       default 127.0.0.1:8090
--config <path>                     explicit config file
--auth-key <key>                    also WIN_RDP_MCP_AUTH_KEY
--allow-insecure-remote             non-loopback bind with no auth (dangerous)
--ssl-certfile, -ssl-keyfile        enable HTTPS
--oauth-client-id, -oauth-client-secret
-                                   also WIN_RDP_MCP_OAUTH_CLIENT_ID / _SECRET
--enable-all, -enable-tier3, -disable-tier2
--tools, -exclude-tools             comma-separated
--ip-allowlist                      comma-separated IPs/CIDRs
--debug                             log every request
-```
+### Other guards
 
-Subcommands: `install`, `uninstall`, `health`.
+- **SSRF** — `Scrape` and `PlaySound` refuse non-public targets (loopback,
+  private ranges, link-local, CGNAT) and refuse redirects.
+- **PowerShell injection** — every value interpolated into a PowerShell command
+  is single-quoted with its quotes doubled; `TaskCreate` takes a closed set of
+  schedule types.
+- **Killing by name is exact**, not fuzzy — upstream scored `notepad` against
+  `notepad++` at 87, high enough to kill the wrong process.
+- When the agent is run **standalone over the network**, it refuses a
+  non-loopback bind with no authentication, and refuses tier 3 on such a bind
+  outright.
+
+### Two things to know
+
+- **Defender.** Pushing an `.exe` into a session and driving input is,
+  mechanically, what lateral-movement malware does. Defender may quarantine the
+  agent. If the system tier never comes up, that's the first thing to check
+  (run with `--debug`).
+- **Authorization.** This is a remote-control pattern. Use it only on machines
+  you own or are authorized to administer.
 
 ---
 
-## Running as a service
+## Running the agent directly
+
+If you'd rather install the agent on the target (and you have a way in — RDP
+drive, SMB, a file copy), it's a standalone MCP server too:
 
 ```powershell
-.\win-rdp-mcp.exe install      # scheduled task, starts at boot as you
-.\win-rdp-mcp.exe uninstall
+# local, over stdio (Claude Desktop launches it)
+.\win-rdp-mcp.exe --transport stdio
+
+# over the network, authenticated
+.\win-rdp-mcp.exe --host 0.0.0.0 --port 8090 --auth-key YOUR_SECRET_KEY
+
+# auto-start at boot as the logged-on user (needs a desktop for the GUI tools)
+.\win-rdp-mcp.exe install
 ```
 
-It registers as the logged-on user rather than SYSTEM on purpose: a SYSTEM
-session has no desktop to screenshot.
-
-### Screenshots with nobody logged in over RDP
-
-When an RDP client disconnects, the session is left with no console to draw to
-and screenshots come back black or fail. `ReconnectSession` runs `tscon` to
-attach it back to the console; `Snapshot` already retries once behind it
-automatically.
+In that mode you connect your client straight to the agent and skip the
+controller entirely.
 
 ---
 
 ## Development
 
 ```sh
-nix develop        # Go 1.27, gopls, staticcheck, just, node, zip
+nix develop        # Go 1.27, gopls, staticcheck, just, node — plus xfreerdp,
+                   # xdotool, imagemagick, xvfb for running the controller
 just               # list every recipe
 ```
 
-> `npx @stubbedev/win-rdp-mcp` does **not** work from inside a checkout. This
-> repo's `package.json` declares that same package name and `bin`, so npx runs
-> the local entry point rather than installing the published one — and there is
-> no `node_modules` here to run it from, so you get
-> `sh: 1: win-rdp-mcp: not found`. Use `just run` locally, and test the npm
-> wrapper from any other directory.
-
 | Recipe | What it does |
 |--------|--------------|
-| `just build` / `just build-windows` | build for this platform / cross-compile the Windows binary |
+| `just build` / `just build-windows` | build for this platform / the Windows agent |
 | `just check` | the full merge gate: gofmt, vet (both platforms), tests, both builds |
-| `just test` / `just test-race` | tests |
-| `just run` / `just run-http` | run over stdio / on loopback with every tool enabled |
-| `just tools` | list the tools the server would expose for a given set of flags |
-| `just smoke` | drive the real binary over stdio and assert `tools/list` |
+| `just run` / `just run-http` | run the agent over stdio / on loopback |
+| `just tools` | list the tools for a given set of flags |
+| `just smoke` | drive the agent over stdio and assert `tools/list` |
 | `just bundle` | pack and validate the `.mcpb` |
-| `just nix-build` / `just nix-check` | build and check the flake |
-| `just nix-vendor-hash` | recompute the flake's `vendorHash` locally |
-| `just install-hooks` | enable the pre-commit gofmt + vet gate |
-| `just release-preview` / `release-patch` / `release-minor` / `release-major` | cut a release |
+| `just nix-build` / `just nix-check` / `just nix-vendor-hash` | flake build / check / refresh vendorHash |
+| `just release-patch` / `-minor` / `-major` | cut a release |
 
 ### Layout
 
 | File | Holds |
 |------|-------|
-| `tools.json` | every tool's JSON Schema, embedded into the binary |
-| `tools.go` | registration, argument validation, dispatch |
-| `desktop.go` | screenshots, input, OCR, recording, session reconnect |
-| `system.go` | shell, processes, services, files, network, tasks |
-| `platform_windows.go` | the Win32 layer: GDI capture, `SendInput`, window enumeration, clipboard |
-| `platform_other.go` | stubs, so everything builds and tests off Windows |
-| `tiers.go` | the tier definitions and selection logic |
-| `security.go` | bind checks, IP allowlist, SSRF guard, auth middleware |
-| `oauth.go` | the minimal authorization server |
-| `tasks.go` | per-category concurrency and the task registry |
+| `controller_linux.go` | the RDP controller: session, desktop tools, MCP routing |
+| `controller_agent_linux.go` | pushing the agent into the session, the file-RPC client |
+| `dirserve.go` | the agent's `dir` transport (file request/response) |
+| `tools.json` / `tools.go` | tool schemas + agent registration/dispatch |
+| `desktop.go` / `system.go` | the agent's Win32 and system tools |
+| `platform_windows.go` / `platform_other.go` | the Win32 layer + off-Windows stubs |
+| `tiers.go` `security.go` `oauth.go` `tasks.go` `config.go` | tiers, gates, OAuth, concurrency, config |
 
 ### CI
 
-- **CI** — gofmt, vet (host and Windows cross-compile), race tests, both
-  builds, `.mcpb` pack and validate, and a stdio smoke test; plus the full test
-  suite and smoke on a real `windows-latest` runner.
+- **CI** — gofmt, vet (host + Windows cross), race tests, both builds, `.mcpb`
+  validate, stdio smoke, plus the suite on a real `windows-latest` runner.
 - **Flake** — recomputes `vendorHash` on any Go change and commits it, builds
-  the flake (which runs the tests), runs `nix flake check`, and pushes the
-  closure to the binary cache.
-- **Flake update** — weekly `nix flake update`, committed only if the flake
-  still builds and its tests still pass.
+  the flake, runs `nix flake check`, pushes the closure to the cache.
+- **Flake update** — weekly `nix flake update`, committed only if it still builds.
 - **Dependabot** — weekly Go and Actions updates, auto-merged once green.
-
-Nothing about the flake needs hand-maintenance: the version comes from
-`package.json`, `vendorHash` and `flake.lock` are maintained by CI.
 
 ---
 
 ## Differences from winremote-mcp
 
-Same tool names, same tiers, same TOML shape. What changed:
-
-- **A single static binary.** No Python, no pip, no `pywin32`/`pyautogui`/`Pillow`
-  on the target machine. Screen capture, synthetic input, window enumeration and
-  the clipboard are direct Win32 calls.
-- **Killing a process by name is exact**, not fuzzy — see
-  [Refusals](#security-model).
-- **The SSRF guard also blocks CGNAT (`100.64.0.0/10`) and `0.0.0.0/8`.**
-- **Config keys are validated.** An unknown key is an error rather than being
-  ignored.
-- **Env vars are `WIN_RDP_MCP_*`** rather than `WINREMOTE_*`, and the config
-  file is `win-rdp-mcp.toml`.
-- **OCR** uses `tesseract` when it is on PATH and the built-in Windows OCR
-  engine otherwise — the same order, with no Python OCR package needed.
-
----
+Same tool names, same tiers, same TOML config shape. What changed: it's a single
+static Go binary (no Python/pywin32 on the target); it can drive the target over
+**RDP alone** with nothing installed; killing a process by name is exact, not
+fuzzy; the SSRF guard also blocks CGNAT and `0.0.0.0/8`; unknown config keys are
+an error; env vars are `WIN_RDP_MCP_*` and the config file is `win-rdp-mcp.toml`.
 
 ## License
 

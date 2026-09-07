@@ -75,11 +75,11 @@ clean:
 
 # Run over stdio — how Claude Desktop and Claude Code launch it locally.
 run *ARGS:
-    go run . -transport stdio {{ARGS}}
+    go run . --transport stdio {{ARGS}}
 
 # Run the HTTP transport on loopback with every tool enabled.
 run-http *ARGS:
-    go run . -host 127.0.0.1 -port 8090 -enable-all -debug {{ARGS}}
+    go run . --host 127.0.0.1 --port 8090 --enable-all --debug {{ARGS}}
 
 # List the tools the server would expose with the given flags.
 tools *ARGS:
@@ -90,7 +90,7 @@ tools *ARGS:
         '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"just","version":"0"}}}' \
         '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
         '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'; sleep 1; } \
-    | ./{{binary}} -transport stdio {{ARGS}} 2>/dev/null \
+    | ./{{binary}} --transport stdio {{ARGS}} 2>/dev/null \
     | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
         const r=d.trim().split("\n").map(JSON.parse).find(m=>m.id===2);
         console.log(r.result.tools.length+" tools:");

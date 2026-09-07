@@ -18,7 +18,7 @@
     "entry_point": "__BIN__",
     "mcp_config": {
       "command": "${__dirname}/__BIN__",
-      "args": ["-transport", "stdio"],
+      "args": ["--transport", "stdio"],
       "env": {
         "WIN_RDP_MCP_AUTH_KEY": "${user_config.auth_key}"
       }

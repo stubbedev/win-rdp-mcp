@@ -33,7 +33,7 @@ func TestParseOptionsEnvAndFlagPrecedence(t *testing.T) {
 	}
 
 	// An explicit flag beats the environment.
-	opts, err = parseOptions([]string{"-auth-key", "from-flag"})
+	opts, err = parseOptions([]string{"--auth-key", "from-flag"})
 	if err != nil {
 		t.Fatal(err)
 	}

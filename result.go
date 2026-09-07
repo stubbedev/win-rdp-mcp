@@ -21,11 +21,14 @@ import (
 
 // contentBlock is one piece of a tool result: text, or an inline image the
 // client renders (screenshots, annotated snapshots, screen recordings).
+// contentBlock is one piece of a tool result. The JSON tags are what the dir
+// transport puts on the wire between agent and controller (Data []byte marshals
+// as base64), so an image result rides the same file channel as text.
 type contentBlock struct {
-	Type string // "text" or "image"
-	Text string
-	Data []byte // raw image bytes; the SDK base64-encodes them on the wire
-	MIME string
+	Type string `json:"type"` // "text" or "image"
+	Text string `json:"text,omitempty"`
+	Data []byte `json:"data,omitempty"` // raw image bytes; base64 on the wire
+	MIME string `json:"mime,omitempty"`
 }
 
 type toolResult struct {

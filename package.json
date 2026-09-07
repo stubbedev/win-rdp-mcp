@@ -1,7 +1,7 @@
 {
   "name": "@stubbedev/win-rdp-mcp",
   "version": "0.1.1",
-  "description": "MCP server for remote control of a Windows desktop (Go, distributed as a prebuilt binary)",
+  "description": "Control a Windows machine over RDP as MCP tools \u2014 screenshots, mouse/keyboard, PowerShell, files, registry. Give it only RDP credentials.",
   "license": "MIT",
   "type": "module",
   "bin": {

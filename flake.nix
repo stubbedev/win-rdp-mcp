@@ -1,5 +1,5 @@
 {
-  description = "MCP server for remote control of a Windows desktop (Go)";
+  description = "MCP server that controls a Windows desktop over RDP (Go)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -23,39 +23,61 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      packages = forAllSystems (pkgs: rec {
-        # buildGoLatestModule, not buildGoModule: go.mod asks for the current
-        # language version, and nixpkgs' default `go` trails it by a release.
-        win-rdp-mcp = pkgs.buildGoLatestModule {
-          pname = "win-rdp-mcp";
-          inherit version;
-          src = self;
+      packages = forAllSystems (pkgs:
+        let
+          # The controller (`win-rdp-mcp control`) shells out to these at
+          # runtime to hold the RDP session and drive the desktop. They exist
+          # only on Linux, which is also the only platform the controller runs
+          # on; the agent half needs none of them.
+          controllerRuntimeDeps = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.freerdp # xfreerdp — the RDP client
+            pkgs.xdotool # synthetic mouse/keyboard into the session
+            pkgs.imagemagick # `import` — screen capture
+            pkgs.xorg.xvfb # the headless X server the session is drawn into
+            pkgs.xorg.xdpyinfo # readiness probe for the display
+          ];
+        in
+        rec {
+          # buildGoLatestModule, not buildGoModule: go.mod asks for the current
+          # language version, and nixpkgs' default `go` trails it by a release.
+          win-rdp-mcp = pkgs.buildGoLatestModule {
+            pname = "win-rdp-mcp";
+            inherit version;
+            src = self;
 
-          # vendorHash is kept current by .github/workflows/flake.yml on any
-          # change to go.mod / go.sum. To refresh it by hand, run
-          # `just nix-vendor-hash`.
-          vendorHash = "sha256-pm7HM4exZu4mcaYQDzHSHBdxgPEpoWJBzyJAA3hsVUI=";
+            # vendorHash is kept current by .github/workflows/flake.yml on any
+            # change to go.mod / go.sum. To refresh it by hand, run
+            # `just nix-vendor-hash`.
+            vendorHash = "sha256-agoMfQxeosUVhH5rCb3nYrwq7Ov25/ecXI4YXlKocNE=";
 
-          # The version comes from the embedded package.json at runtime, so no
-          # -X main.Version wiring is needed here.
-          ldflags = [ "-s" "-w" ];
+            # The version comes from the embedded package.json at runtime, so no
+            # -X main.Version wiring is needed here.
+            ldflags = [ "-s" "-w" ];
 
-          # The test suite is the merge gate, so the flake runs it too: a
-          # `nix build` that succeeds means the same checks CI runs passed.
-          doCheck = true;
+            # The test suite is the merge gate, so the flake runs it too: a
+            # `nix build` that succeeds means the same checks CI runs passed.
+            doCheck = true;
 
-          meta = {
-            description = "MCP server for remote control of a Windows desktop";
-            homepage = "https://github.com/stubbedev/win-rdp-mcp";
-            license = pkgs.lib.licenses.mit;
-            mainProgram = "win-rdp-mcp";
-            # The server itself only does anything useful on Windows, but it
-            # builds and tests everywhere — which is what lets CI check it.
-            platforms = pkgs.lib.platforms.unix ++ pkgs.lib.platforms.windows;
+            # Put the controller's runtime tools on the binary's PATH so
+            # `nix run` works as a controller with nothing else installed.
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.makeWrapper ];
+            postFixup = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              wrapProgram $out/bin/win-rdp-mcp \
+                --prefix PATH : ${pkgs.lib.makeBinPath controllerRuntimeDeps}
+            '';
+
+            meta = {
+              description = "MCP server for remote control of a Windows desktop over RDP";
+              homepage = "https://github.com/stubbedev/win-rdp-mcp";
+              license = pkgs.lib.licenses.mit;
+              mainProgram = "win-rdp-mcp";
+              # Builds and tests everywhere; the controller runs on Linux and
+              # the agent on Windows.
+              platforms = pkgs.lib.platforms.unix ++ pkgs.lib.platforms.windows;
+            };
           };
-        };
-        default = win-rdp-mcp;
-      });
+          default = win-rdp-mcp;
+        });
 
       apps = forAllSystems (pkgs: rec {
         win-rdp-mcp = {
@@ -78,6 +100,14 @@
             pkgs.zip
             pkgs.unzip
             pkgs.nixpkgs-fmt
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            # The controller's runtime tools, so `just run`/live testing works
+            # inside the dev shell.
+            pkgs.freerdp
+            pkgs.xdotool
+            pkgs.imagemagick
+            pkgs.xorg.xvfb
+            pkgs.xorg.xdpyinfo
           ];
 
           shellHook = ''

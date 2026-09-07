@@ -18,7 +18,7 @@ if (!existsSync(exe)) {
 }
 
 // -enable-all so the smoke covers every registered schema, not just tiers 1-2.
-const proc = spawn(exe, ['-transport', 'stdio', '-enable-all'], { stdio: ['pipe', 'pipe', 'inherit'] });
+const proc = spawn(exe, ['--transport', 'stdio', '--enable-all'], { stdio: ['pipe', 'pipe', 'inherit'] });
 
 const send = (msg) => proc.stdin.write(JSON.stringify(msg) + '\n');
 const fail = (m) => {
