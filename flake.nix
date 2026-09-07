@@ -58,6 +58,15 @@
             # `nix build` that succeeds means the same checks CI runs passed.
             doCheck = true;
 
+            # The controller pushes the Windows agent into the RDP session and
+            # looks for it next to its own binary, so a Linux build has to carry
+            # the cross-compiled .exe. Without it every agent-backed tool blocks
+            # on a bootstrap that already failed and times out the caller.
+            postBuild = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
+                -trimpath -ldflags "-s -w" -o $GOPATH/bin/win-rdp-mcp.exe .
+            '';
+
             # Put the controller's runtime tools on the binary's PATH so
             # `nix run` works as a controller with nothing else installed.
             nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.makeWrapper ];
