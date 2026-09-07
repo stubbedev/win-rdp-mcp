@@ -113,6 +113,22 @@ Or, without installing anything, use the Nix runner as the command:
 }
 ```
 
+To keep the password out of the client config, drop the `env` and point
+`--pass-file` at a `chmod 600` file instead:
+
+```json
+"args": ["control", "--target", "192.168.1.50", "--user", "administrator",
+         "--pass-file", "/home/you/.config/win-rdp-mcp/target.pass"]
+```
+
+In Claude Code you can do all of this in one line:
+
+```sh
+claude mcp add win-rdp -s user -- \
+  win-rdp-mcp control --target 192.168.1.50 --user administrator \
+  --pass-file ~/.config/win-rdp-mcp/target.pass
+```
+
 ---
 
 ## Install
@@ -200,23 +216,32 @@ Subcommands: `control`, `install`, `uninstall`, `health`.
 45 tools. Every result is prefixed `[task:<id>]`, which `GetTaskStatus` and
 `CancelTask` take.
 
-**Desktop** (driven over RDP, no target footprint): `Snapshot`,
-`AnnotatedSnapshot`, `Click`, `Type`, `Scroll`, `Move`, `Shortcut`, `Wait`,
-`OCR`, `ScreenRecord`, `LockScreen`, `ReconnectSession`, `FocusWindow`,
-`MinimizeAll`, `App`.
+When running as a controller, the split below is what has a footprint on the
+target and what does not. When running the agent standalone on the target, every
+tool is served by the agent and the distinction disappears.
 
-**System** (via the in-session agent): `Shell`, `ListProcesses`, `KillProcess`,
-`GetSystemInfo`, `ServiceList/Start/Stop`, `TaskList/Create/Delete`, `EventLog`,
-`RegRead`, `RegWrite`, `FileRead/Write/List/Search/Download/Upload`,
-`GetClipboard`, `SetClipboard`, `Notification`, `PlaySound`.
+**Served locally by the controller** — driven straight over RDP with
+xdotool/import, **no footprint on the target**:
+`Snapshot`, `Click`, `Type`, `Move`, `Scroll`, `Shortcut`, `Wait`.
 
-**Network**: `Ping`, `PortCheck`, `NetConnections`, `Scrape`.
+> `Snapshot` returns the screenshot on its own; once the agent is up it also
+> carries the window and control list (with coordinates), so a model can aim
+> clicks by element rather than by guessing pixels.
 
-**Tasks**: `GetTaskStatus`, `GetRunningTasks`, `CancelTask`.
+**Served by the in-session agent** — everything else, including the desktop
+tools that need Win32 (window management, OCR, recording, the annotated view):
 
-`Snapshot` returns the screenshot; once the agent is up it also carries the
-window and control list (with coordinates) so a model can aim clicks by element
-rather than by guessing pixels.
+- *Desktop/Win32:* `AnnotatedSnapshot`, `FocusWindow`, `MinimizeAll`, `App`,
+  `OCR`, `ScreenRecord`, `LockScreen`, `ReconnectSession`, `GetClipboard`,
+  `SetClipboard`, `Notification`, `PlaySound`
+- *System:* `Shell`, `ListProcesses`, `KillProcess`, `GetSystemInfo`,
+  `ServiceList/Start/Stop`, `TaskList/Create/Delete`, `EventLog`, `RegRead`,
+  `RegWrite`, `FileRead/Write/List/Search/Download/Upload`
+- *Network:* `Ping`, `PortCheck`, `NetConnections`, `Scrape`
+- *Tasks:* `GetTaskStatus`, `GetRunningTasks`, `CancelTask`
+
+The first agent-served call after connect waits ~40s while the agent bootstraps
+into the session; the locally-served tools work immediately.
 
 ---
 
