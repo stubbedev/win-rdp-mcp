@@ -1,0 +1,77 @@
+name: Flake
+
+on:
+  push:
+    branches: [master]
+    paths: ['go.mod', 'go.sum', 'flake.nix', 'flake.lock', '**/*.go', 'tools.json', 'package.json']
+  pull_request:
+    paths: ['go.mod', 'go.sum', 'flake.nix', 'flake.lock', '**/*.go', 'tools.json', 'package.json']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flake-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vendor-hash:
+    runs-on: ubuntu-latest
+    # Exposed as env so the cache steps can be skipped when the secret is
+    # absent — `secrets.*` is not allowed in a step-level `if:`.
+    env:
+      XILO_TOKEN: ${{ secrets.XILO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      # Recompute the Go module vendorHash from go.mod/go.sum. Setting it to a
+      # fake value makes `nix build` fail and report the correct one, which we
+      # then write back. Idempotent: a current hash converges to no change.
+      - name: Recompute vendorHash
+        run: |
+          FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          CUR="$(grep -oP 'vendorHash = "\K[^"]+' flake.nix)"
+          sed -i "s#vendorHash = \"${CUR}\"#vendorHash = \"${FAKE}\"#" flake.nix
+          GOT="$(nix build .#default --no-link 2>&1 | grep -oP 'got:\s+\K(sha256-\S+)' | head -1 || true)"
+          [ -z "$GOT" ] && GOT="$CUR"
+          sed -i "s#vendorHash = \"${FAKE}\"#vendorHash = \"${GOT}\"#" flake.nix
+          echo "vendorHash = ${GOT}"
+
+      - name: Build check (compiles and runs go test via doCheck)
+        run: nix build .#default --no-link --print-build-logs
+
+      - name: Flake check
+        run: nix flake check --print-build-logs
+
+      # Push the built x86_64-linux closure to the cache so consumers can
+      # substitute it instead of rebuilding. Only on master pushes — PRs (incl.
+      # from forks) don't get the token.
+      - name: setup xilo
+        if: env.XILO_TOKEN != '' && github.event_name != 'pull_request'
+        uses: stubbedev/xilo@v1
+        with:
+          url: https://nix.stubbe.dev
+          cache: default
+          token: ${{ secrets.XILO_TOKEN }}
+
+      - name: Push to xilo cache
+        if: env.XILO_TOKEN != '' && github.event_name != 'pull_request'
+        # Best-effort: a cache-push failure must not redden the workflow.
+        continue-on-error: true
+        run: xilo push default "$(nix build .#default --no-link --print-out-paths)"
+
+      - name: Commit updated vendorHash
+        if: github.event_name != 'pull_request'
+        run: |
+          if git diff --quiet flake.nix; then
+            echo "vendorHash already current."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add flake.nix
+            git commit -m "chore(nix): update vendorHash [skip ci]"
+            git push
+          fi

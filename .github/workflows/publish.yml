@@ -1,0 +1,115 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  binaries:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows first: it is the only platform where the desktop tools do
+          # anything. The rest build cleanly against the stubs and are there for
+          # anyone driving the server from a non-Windows host.
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+          - { goos: windows, goarch: '386' }
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: arm, goarm: '7' }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '0'
+        run: |
+          # The version is embedded from package.json at runtime — no -X needed.
+          EXT=""
+          [ "$GOOS" = "windows" ] && EXT=".exe"
+          OUT="win-rdp-mcp_${GOOS}_${GOARCH}${EXT}"
+          go build -trimpath -ldflags "-s -w" -o "$OUT" .
+          echo "ASSET=$OUT" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    name: Attach binaries to release
+    needs: binaries
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Pack .mcpb bundles (one-click Claude Desktop install)
+        run: |
+          for t in windows_amd64:win32 windows_arm64:win32 \
+                   darwin_amd64:darwin darwin_arm64:darwin \
+                   linux_amd64:linux linux_arm64:linux; do
+            arch="${t%%:*}"; platform="${t##*:}"
+            bin="dist/win-rdp-mcp_${arch}"
+            [ "$platform" = win32 ] && bin="${bin}.exe"
+            packaging/mcpb/pack.sh "$bin" "$platform" "dist/win-rdp-mcp_${arch}.mcpb"
+          done
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
+
+  npm:
+    name: Publish npm wrapper
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag v$TAG does not match package.json version $PKG" >&2
+            exit 1
+          fi
+
+      - name: Publish to npm
+        env:
+          WIN_RDP_MCP_SKIP_DOWNLOAD: '1'
+        run: npm publish --provenance --access public

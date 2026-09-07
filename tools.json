@@ -1,0 +1,533 @@
+[
+  {
+    "name": "Snapshot",
+    "description": "Capture desktop screenshot, window list, and interactive UI elements.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "use_vision": { "type": "boolean", "default": true, "description": "Include the screenshot image (default true)." },
+        "quality": { "type": "integer", "default": 75, "minimum": 1, "maximum": 100, "description": "JPEG quality 1-100. Lower = smaller." },
+        "max_width": { "type": "integer", "default": 0, "description": "Max image width in pixels. 0 = native resolution." },
+        "monitor": { "type": "integer", "default": 0, "description": "Monitor to capture. 0 = all monitors, 1/2/3 = a specific monitor." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "AnnotatedSnapshot",
+    "description": "Screenshot with numbered red boxes drawn on each interactive UI element, so click targets can be named by number.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "max_elements": { "type": "integer", "default": 30, "description": "Maximum number of elements to annotate." },
+        "quality": { "type": "integer", "default": 75, "minimum": 1, "maximum": 100, "description": "JPEG quality 1-100." },
+        "max_width": { "type": "integer", "default": 0, "description": "Max image width in pixels. 0 = native resolution." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "Click",
+    "description": "Mouse click at screen coordinates.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "integer", "description": "X coordinate." },
+        "y": { "type": "integer", "description": "Y coordinate." },
+        "button": { "type": "string", "enum": ["left", "right", "middle"], "default": "left" },
+        "action": { "type": "string", "enum": ["click", "double", "hover"], "default": "click" }
+      },
+      "required": ["x", "y"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "Type",
+    "description": "Type text, optionally clicking a position first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "description": "Text to type." },
+        "x": { "type": "integer", "default": 0, "description": "X coordinate (0 = current position)." },
+        "y": { "type": "integer", "default": 0, "description": "Y coordinate (0 = current position)." },
+        "clear": { "type": "boolean", "default": false, "description": "Clear existing content first (Ctrl+A, Delete)." },
+        "press_enter": { "type": "boolean", "default": false, "description": "Press Enter after typing." }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "Scroll",
+    "description": "Scroll at a position.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "amount": { "type": "integer", "description": "Scroll amount in notches (positive = up/right, negative = down/left)." },
+        "x": { "type": "integer", "default": 0, "description": "X coordinate (0 = current)." },
+        "y": { "type": "integer", "default": 0, "description": "Y coordinate (0 = current)." },
+        "horizontal": { "type": "boolean", "default": false, "description": "Horizontal scroll instead of vertical." }
+      },
+      "required": ["amount"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "Move",
+    "description": "Move the mouse, or drag from one position to another.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "integer", "description": "Target X." },
+        "y": { "type": "integer", "description": "Target Y." },
+        "drag": { "type": "boolean", "default": false, "description": "Hold the left button while moving." },
+        "start_x": { "type": "integer", "default": 0, "description": "Drag start X." },
+        "start_y": { "type": "integer", "default": 0, "description": "Drag start Y." },
+        "duration": { "type": "number", "default": 0.3, "description": "Movement duration in seconds." }
+      },
+      "required": ["x", "y"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "Shortcut",
+    "description": "Execute a keyboard shortcut, e.g. 'ctrl+c', 'alt+tab', 'win+e'.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "keys": { "type": "string", "description": "Plus-separated key names, e.g. 'ctrl+shift+esc'." }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "Wait",
+    "description": "Pause for a number of seconds. Useful between UI actions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seconds": { "type": "number", "default": 1.0, "description": "Seconds to wait (max 60)." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "FocusWindow",
+    "description": "Bring a window to the foreground by title (fuzzy) or handle (exact).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "default": "", "description": "Window title, fuzzy matched." },
+        "handle": { "type": "integer", "default": 0, "description": "Window handle, exact." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "MinimizeAll",
+    "description": "Minimize all windows (Win+D — show desktop).",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+  },
+  {
+    "name": "App",
+    "description": "Launch, switch to, or resize an application window.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["launch", "switch", "resize"], "default": "launch" },
+        "name": { "type": "string", "default": "", "description": "Application name or path (launch/switch)." },
+        "args": { "type": "string", "default": "", "description": "Arguments (launch)." },
+        "handle": { "type": "integer", "default": 0, "description": "Window handle (switch/resize)." },
+        "width": { "type": "integer", "default": 0, "description": "New width (resize)." },
+        "height": { "type": "integer", "default": 0, "description": "New height (resize)." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "Shell",
+    "description": "Execute a PowerShell command on the Windows host.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string", "description": "PowerShell command to execute." },
+        "timeout": { "type": "integer", "default": 30, "description": "Timeout in seconds." },
+        "cwd": { "type": "string", "default": "", "description": "Working directory to run in." }
+      },
+      "required": ["command"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "GetClipboard",
+    "description": "Read the Windows clipboard text content.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+  },
+  {
+    "name": "SetClipboard",
+    "description": "Set the Windows clipboard text content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "text": { "type": "string", "description": "Text to place on the clipboard." } },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ListProcesses",
+    "description": "List running processes with CPU and memory usage.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": { "type": "string", "default": "", "description": "Fuzzy filter by process name." },
+        "sort_by": { "type": "string", "enum": ["cpu", "memory", "name"], "default": "memory" },
+        "limit": { "type": "integer", "default": 30, "description": "Max rows to return." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "KillProcess",
+    "description": "Kill a process by PID or by name.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": { "type": "integer", "default": 0, "description": "Process ID." },
+        "name": { "type": "string", "default": "", "description": "Process name, fuzzy matched." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "GetSystemInfo",
+    "description": "System information: CPU, memory, disk, network counters, uptime.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+  },
+  {
+    "name": "ReconnectSession",
+    "description": "Reconnect a disconnected Windows desktop session to the console via tscon, so screenshots and UI automation work with no RDP client attached.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "force": { "type": "boolean", "default": false, "description": "Reconnect even if the session appears active." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "Notification",
+    "description": "Show a Windows toast notification.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "default": "win-rdp-mcp" },
+        "message": { "type": "string", "default": "" }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "PlaySound",
+    "description": "Play an audio file on the Windows host, from a local path or a URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "default": "", "description": "Local file path, e.g. C:\\Music\\alert.wav." },
+        "url": { "type": "string", "default": "", "description": "URL to an audio file; downloaded to a temp file first (10 MB limit)." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "LockScreen",
+    "description": "Lock the Windows workstation.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+  },
+  {
+    "name": "Scrape",
+    "description": "Fetch a URL and return its content as markdown.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "url": { "type": "string", "description": "URL to fetch." } },
+      "required": ["url"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "FileRead",
+    "description": "Read file content. Pass encoding 'binary' for base64 output.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "File path." },
+        "encoding": { "type": "string", "default": "utf-8", "description": "Text encoding, or 'binary' for base64." }
+      },
+      "required": ["path"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "FileWrite",
+    "description": "Write text content to a file, creating parent directories as needed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "File path." },
+        "content": { "type": "string", "description": "Content to write." },
+        "encoding": { "type": "string", "default": "utf-8", "description": "Text encoding." },
+        "append": { "type": "boolean", "default": false, "description": "Append instead of overwrite." }
+      },
+      "required": ["path", "content"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "FileList",
+    "description": "List directory contents with size and modification date.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "default": ".", "description": "Directory path." },
+        "show_hidden": { "type": "boolean", "default": false, "description": "Include dot-prefixed entries." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "FileSearch",
+    "description": "Search files by glob name pattern.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string", "description": "Glob pattern, e.g. '*.log', 'report*'." },
+        "path": { "type": "string", "default": ".", "description": "Root directory to search." },
+        "recursive": { "type": "boolean", "default": true, "description": "Search subdirectories." },
+        "limit": { "type": "integer", "default": 50, "description": "Max results." }
+      },
+      "required": ["pattern"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "FileDownload",
+    "description": "Read a file as base64-encoded content. Use for binary files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "path": { "type": "string", "description": "File path to download." } },
+      "required": ["path"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "FileUpload",
+    "description": "Write a file from base64-encoded content. Use for binary files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Destination file path." },
+        "data_base64": { "type": "string", "description": "Base64-encoded file content (max 100 MB encoded)." }
+      },
+      "required": ["path", "data_base64"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "RegRead",
+    "description": "Read a Windows registry value.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string", "description": "Registry key path, e.g. HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion." },
+        "value_name": { "type": "string", "description": "Name of the value to read; empty reads the default value." }
+      },
+      "required": ["key", "value_name"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "RegWrite",
+    "description": "Write a Windows registry value, creating the key if needed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string", "description": "Registry key path, e.g. HKCU\\SOFTWARE\\MyApp." },
+        "value_name": { "type": "string", "description": "Name of the value to write." },
+        "data": { "type": "string", "description": "Value data. Numbers as strings for DWORD/QWORD; hex for REG_BINARY; '|' separated for REG_MULTI_SZ." },
+        "reg_type": { "type": "string", "enum": ["REG_SZ", "REG_EXPAND_SZ", "REG_DWORD", "REG_QWORD", "REG_BINARY", "REG_MULTI_SZ"], "default": "REG_SZ" }
+      },
+      "required": ["key", "value_name", "data"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ServiceList",
+    "description": "List Windows services.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "filter": { "type": "string", "default": "", "description": "Substring match on service name or display name." } },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ServiceStart",
+    "description": "Start a Windows service.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "name": { "type": "string", "description": "Service name." } },
+      "required": ["name"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ServiceStop",
+    "description": "Stop a Windows service.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "name": { "type": "string", "description": "Service name." } },
+      "required": ["name"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "TaskList",
+    "description": "List Windows scheduled tasks.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "filter": { "type": "string", "default": "", "description": "Substring match on task name." } },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "TaskCreate",
+    "description": "Create a Windows scheduled task.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Task name." },
+        "command": { "type": "string", "description": "Command to execute." },
+        "schedule": { "type": "string", "enum": ["ONCE", "DAILY", "WEEKLY", "MONTHLY", "ONSTART", "ONLOGON", "ONIDLE"], "description": "Schedule type." }
+      },
+      "required": ["name", "command", "schedule"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "TaskDelete",
+    "description": "Delete a Windows scheduled task.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "name": { "type": "string", "description": "Task name." } },
+      "required": ["name"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "Ping",
+    "description": "Ping a host.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string", "description": "Hostname or IP address." },
+        "count": { "type": "integer", "default": 4, "description": "Number of echo requests." }
+      },
+      "required": ["host"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "PortCheck",
+    "description": "Check whether a TCP port accepts connections.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string", "description": "Hostname or IP address." },
+        "port": { "type": "integer", "description": "Port number." },
+        "timeout": { "type": "number", "default": 5.0, "description": "Connection timeout in seconds." }
+      },
+      "required": ["host", "port"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "NetConnections",
+    "description": "List network connections with local/remote address, state and owning PID.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": { "type": "string", "default": "", "description": "Substring match on address, status or PID." },
+        "limit": { "type": "integer", "default": 50, "description": "Max rows to return." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "EventLog",
+    "description": "Read Windows Event Log entries.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "log_name": { "type": "string", "default": "System", "description": "Log name: System, Application, Security, ..." },
+        "count": { "type": "integer", "default": 20, "description": "Number of entries (1-1000)." },
+        "level": { "type": "string", "enum": ["", "critical", "error", "warning", "information", "verbose"], "default": "" }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "OCR",
+    "description": "Extract text from the screen. Uses tesseract when on PATH, else the Windows built-in OCR engine.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "left": { "type": "integer", "default": 0, "description": "Left edge of the region; all zero = full screen." },
+        "top": { "type": "integer", "default": 0 },
+        "right": { "type": "integer", "default": 0 },
+        "bottom": { "type": "integer", "default": 0 },
+        "lang": { "type": "string", "default": "eng", "description": "Tesseract language code." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ScreenRecord",
+    "description": "Record the screen and return an animated GIF.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "duration": { "type": "number", "default": 3.0, "description": "Recording length in seconds (0.5-10)." },
+        "fps": { "type": "integer", "default": 5, "description": "Frames per second (1-10)." },
+        "left": { "type": "integer", "default": 0, "description": "Left edge of the region; all zero = full screen." },
+        "top": { "type": "integer", "default": 0 },
+        "right": { "type": "integer", "default": 0 },
+        "bottom": { "type": "integer", "default": 0 },
+        "max_width": { "type": "integer", "default": 800, "description": "Max width of the output GIF." }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "CancelTask",
+    "description": "Cancel a running or pending task by its task ID.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "task_id": { "type": "string", "description": "Task ID, as reported in a [task:abc123] prefix." } },
+      "required": ["task_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "GetTaskStatus",
+    "description": "Get the status of one task, or list recent tasks when task_id is empty.",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "task_id": { "type": "string", "default": "", "description": "Task ID; empty lists recent tasks." } },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "GetRunningTasks",
+    "description": "List all currently running and pending tasks.",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+  }
+]

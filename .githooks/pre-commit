@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# gofmt + vet gate. Bypass with `git commit --no-verify`.
+set -euo pipefail
+
+unformatted=$(gofmt -l . | grep -v '^vendor/' || true)
+if [ -n "$unformatted" ]; then
+    echo "pre-commit: these files are not gofmt-clean (run 'just fmt'):" >&2
+    printf '%s\n' "$unformatted" >&2
+    exit 1
+fi
+
+go vet ./...
+GOOS=windows go vet -unsafeptr=false ./...

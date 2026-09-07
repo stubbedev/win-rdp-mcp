@@ -1,0 +1,43 @@
+{
+  "name": "@stubbedev/win-rdp-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for remote control of a Windows desktop (Go, distributed as a prebuilt binary)",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "win-rdp-mcp": "bin/cli.mjs"
+  },
+  "files": [
+    "bin/cli.mjs",
+    "scripts/download.mjs",
+    "scripts/postinstall.mjs",
+    "win-rdp-mcp.example.toml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.mjs",
+    "build": "go build -o win-rdp-mcp .",
+    "test": "go test ./...",
+    "bundle": "go build -o win-rdp-mcp . && packaging/mcpb/pack.sh ./win-rdp-mcp $(case $(uname -s) in Darwin) echo darwin;; MINGW*|MSYS*) echo win32;; *) echo linux;; esac) dist/win-rdp-mcp.mcpb",
+    "smoke": "go build -o win-rdp-mcp . && node scripts/smoke.mjs",
+    "preversion": "go vet ./... && npm run test && npm run smoke",
+    "release:patch": "npm version patch && git push origin HEAD --follow-tags",
+    "release:minor": "npm version minor && git push origin HEAD --follow-tags",
+    "release:major": "npm version major && git push origin HEAD --follow-tags"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stubbedev/win-rdp-mcp.git"
+  },
+  "homepage": "https://github.com/stubbedev/win-rdp-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/stubbedev/win-rdp-mcp/issues"
+  }
+}

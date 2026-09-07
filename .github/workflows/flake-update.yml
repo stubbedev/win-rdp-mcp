@@ -1,0 +1,50 @@
+name: Flake update
+
+# Keeps flake.lock current without anyone remembering to. The bump only lands if
+# the flake still builds and its tests still pass, so a broken nixpkgs revision
+# never gets committed and the next run simply tries again.
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Update flake.lock
+        run: nix flake update
+
+      - name: Refresh vendorHash for the new toolchain
+        run: |
+          FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          CUR="$(grep -oP 'vendorHash = "\K[^"]+' flake.nix)"
+          sed -i "s#vendorHash = \"${CUR}\"#vendorHash = \"${FAKE}\"#" flake.nix
+          GOT="$(nix build .#default --no-link 2>&1 | grep -oP 'got:\s+\K(sha256-\S+)' | head -1 || true)"
+          [ -z "$GOT" ] && GOT="$CUR"
+          sed -i "s#vendorHash = \"${FAKE}\"#vendorHash = \"${GOT}\"#" flake.nix
+
+      - name: Build and check
+        run: |
+          nix build .#default --no-link --print-build-logs
+          nix flake check --print-build-logs
+
+      - name: Commit
+        run: |
+          if git diff --quiet; then
+            echo "flake.lock already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add flake.lock flake.nix
+          git commit -m "chore(nix): update flake.lock"
+          git push

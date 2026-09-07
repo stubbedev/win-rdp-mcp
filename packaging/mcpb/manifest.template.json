@@ -1,0 +1,39 @@
+{
+  "manifest_version": "0.3",
+  "name": "win-rdp-mcp",
+  "display_name": "Windows Remote Desktop",
+  "version": "__VERSION__",
+  "description": "Control a Windows machine: screenshots, keyboard and mouse, PowerShell, files, services, registry and event log.",
+  "long_description": "Runs on the Windows machine you want to control and exposes it as MCP tools: screenshots and an annotated view of the on-screen controls, synthetic mouse and keyboard input, window management, PowerShell, file transfer, process and service control, the registry, scheduled tasks, the event log, and network checks.\n\nTools are grouped into three tiers. Tier 1 (read-only) and tier 2 (desktop interaction) are on by default. Tier 3 — PowerShell, file writes, registry writes, service control — is destructive and stays off until you enable it below.\n\nWhen serving over the network rather than stdio, set an auth key: the server refuses a non-loopback bind without one, and refuses tier 3 on such a bind outright.",
+  "author": { "name": "stubbedev", "url": "https://github.com/stubbedev" },
+  "icon": "icon.png",
+  "homepage": "https://github.com/stubbedev/win-rdp-mcp",
+  "documentation": "https://github.com/stubbedev/win-rdp-mcp#readme",
+  "support": "https://github.com/stubbedev/win-rdp-mcp/issues",
+  "repository": { "type": "git", "url": "https://github.com/stubbedev/win-rdp-mcp" },
+  "license": "MIT",
+  "keywords": ["windows", "remote desktop", "rdp", "automation", "screenshot", "powershell"],
+  "server": {
+    "type": "binary",
+    "entry_point": "__BIN__",
+    "mcp_config": {
+      "command": "${__dirname}/__BIN__",
+      "args": ["-transport", "stdio"],
+      "env": {
+        "WIN_RDP_MCP_AUTH_KEY": "${user_config.auth_key}"
+      }
+    }
+  },
+  "user_config": {
+    "auth_key": {
+      "type": "string",
+      "title": "Auth key (network transport only)",
+      "description": "Only needed if you also serve this over HTTP. Leave blank for the local stdio setup Claude Desktop uses.",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["__PLATFORM__"]
+  }
+}

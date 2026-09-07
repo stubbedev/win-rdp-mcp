@@ -1,0 +1,51 @@
+# win-rdp-mcp configuration.
+#
+# Copy to win-rdp-mcp.toml next to the binary, or to
+# ~/.config/win-rdp-mcp/win-rdp-mcp.toml. Every value here can also be given as
+# a command-line flag, and a flag always wins over the file.
+
+[server]
+# 127.0.0.1 keeps the server reachable only from this machine. Use 0.0.0.0 to
+# serve it on the network — but then auth_key below stops being optional.
+host = "127.0.0.1"
+port = 8090
+
+# Clients send this as `Authorization: Bearer <key>`. Required for any
+# non-loopback bind. Can also come from WIN_RDP_MCP_AUTH_KEY.
+# auth_key = "change-me"
+
+# Break-glass for a trusted lab LAN: allows a non-loopback bind with no
+# authentication. It does NOT allow tier 3 (Shell, RegWrite, ...) on such a
+# bind — that combination is refused outright, because it is remote code
+# execution with no password.
+allow_insecure_remote = false
+
+# Both together enable HTTPS.
+# ssl_certfile = "C:/certs/cert.pem"
+# ssl_keyfile  = "C:/certs/key.pem"
+
+[security]
+# Only these addresses may connect. /health stays reachable so a health probe
+# does not need an entry.
+# ip_allowlist = ["192.168.1.0/24"]
+
+# Tier 3 is destructive: Shell, App, PlaySound, FileRead, FileWrite,
+# FileDownload, FileUpload, KillProcess, RegWrite, ServiceStart, ServiceStop,
+# TaskCreate, TaskDelete, SetClipboard, LockScreen.
+enable_tier3 = false
+
+# Tier 2 drives the desktop: Click, Type, Move, Scroll, Shortcut, FocusWindow,
+# MinimizeAll, Scrape, CancelTask, ReconnectSession. On by default.
+disable_tier2 = false
+
+# A pre-provisioned OAuth client, for MCP clients that use OAuth rather than a
+# static key. Both values are required, and dynamic registration is disabled.
+# oauth_client_id     = "my-client"
+# oauth_client_secret = "my-secret"
+
+[tools]
+# An explicit list overrides the tier settings entirely.
+# enable = ["Snapshot", "Click", "Type", "Shell"]
+
+# Subtracted last, whatever else selected them.
+# exclude = ["ScreenRecord"]

@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Format
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "::error::code is not formatted; run 'just fmt'"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Vet (windows cross-compile)
+        # The Windows build carries one documented uintptr-to-pointer conversion
+        # on non-Go memory (globalLock in platform_windows.go) that the unsafeptr
+        # analyzer cannot prove sound, so that one analyzer is dropped here.
+        run: GOOS=windows go vet -unsafeptr=false ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        run: go build -o win-rdp-mcp .
+
+      - name: Build (windows)
+        # The deployment target. A Linux-only build would not catch a break in
+        # the Win32 layer, which is most of this server.
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o win-rdp-mcp.exe .
+
+      - name: Bundle — pack + validate .mcpb
+        run: |
+          # Catches a manifest template typo on PR instead of on tag day.
+          packaging/mcpb/pack.sh ./win-rdp-mcp.exe win32 dist/win-rdp-mcp_windows_amd64.mcpb
+          unzip -o -q dist/win-rdp-mcp_windows_amd64.mcpb -d dist/bundle
+          test -f dist/bundle/icon.png
+          npx -y @anthropic-ai/mcpb validate dist/bundle/manifest.json
+
+      - name: Smoke — tools/list over stdio
+        run: node scripts/smoke.mjs
+
+  windows:
+    # The Win32 layer only really compiles-and-runs here. Nothing in the test
+    # suite touches a real desktop, so this stays a headless runner.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Test
+        run: go test ./...
+
+      - name: Smoke — tools/list over stdio
+        run: node scripts/smoke.mjs
