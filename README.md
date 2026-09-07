@@ -346,6 +346,13 @@ nix develop        # Go 1.27, gopls, staticcheck, just, node, zip
 just               # list every recipe
 ```
 
+> `npx @stubbedev/win-rdp-mcp` does **not** work from inside a checkout. This
+> repo's `package.json` declares that same package name and `bin`, so npx runs
+> the local entry point rather than installing the published one — and there is
+> no `node_modules` here to run it from, so you get
+> `sh: 1: win-rdp-mcp: not found`. Use `just run` locally, and test the npm
+> wrapper from any other directory.
+
 | Recipe | What it does |
 |--------|--------------|
 | `just build` / `just build-windows` | build for this platform / cross-compile the Windows binary |
