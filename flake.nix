@@ -48,7 +48,7 @@
             # vendorHash is kept current by .github/workflows/flake.yml on any
             # change to go.mod / go.sum. To refresh it by hand, run
             # `just nix-vendor-hash`.
-            vendorHash = "sha256-agoMfQxeosUVhH5rCb3nYrwq7Ov25/ecXI4YXlKocNE=";
+            vendorHash = "sha256-R06ZfkUMtSnETYgkPZwSHQjvO+k96ezGIsEhufQodbA=";
 
             # The version comes from the embedded package.json at runtime, so no
             # -X main.Version wiring is needed here.
