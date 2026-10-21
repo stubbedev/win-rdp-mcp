@@ -24,7 +24,6 @@ const PLATFORMS = {
   'linux:x64': { os: 'linux', arch: 'amd64', ext: '' },
   'linux:arm64': { os: 'linux', arch: 'arm64', ext: '' },
   'linux:arm': { os: 'linux', arch: 'arm', ext: '' },
-  'darwin:x64': { os: 'darwin', arch: 'amd64', ext: '' },
   'darwin:arm64': { os: 'darwin', arch: 'arm64', ext: '' },
 };
 

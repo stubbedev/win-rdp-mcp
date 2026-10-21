@@ -27,7 +27,6 @@ jobs:
           - { goos: linux, goarch: amd64 }
           - { goos: linux, goarch: arm64 }
           - { goos: linux, goarch: arm, goarm: '7' }
-          - { goos: darwin, goarch: amd64 }
           - { goos: darwin, goarch: arm64 }
     steps:
       - uses: actions/checkout@v7
@@ -72,7 +71,7 @@ jobs:
       - name: Pack .mcpb bundles (one-click Claude Desktop install)
         run: |
           for t in windows_amd64:win32 windows_arm64:win32 \
-                   darwin_amd64:darwin darwin_arm64:darwin \
+                   darwin_arm64:darwin \
                    linux_amd64:linux linux_arm64:linux; do
             arch="${t%%:*}"; platform="${t##*:}"
             bin="dist/win-rdp-mcp_${arch}"
