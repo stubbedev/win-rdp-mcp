@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -87,6 +88,7 @@ type options struct {
 	sslKeyFile          string
 	oauthClientID       string
 	oauthClientSecret   string
+	oauthRedirectURIs   []*url.URL
 
 	ipAllowlist []netip.Prefix
 	enabled     map[string]bool
@@ -134,6 +136,7 @@ func parseOptions(argv []string) (options, error) {
 		sslKeyFile          = fs.String("ssl-keyfile", "", "TLS private key file")
 		oauthClientID       = fs.String("oauth-client-id", "", "pre-provisioned OAuth client ID")
 		oauthClientSecret   = fs.String("oauth-client-secret", "", "pre-provisioned OAuth client secret")
+		oauthRedirectURIs   = fs.String("oauth-redirect-uris", "", "comma-separated loopback redirect URIs registered for the OAuth client")
 		enableAll           = fs.BoolP("enable-all", "a", false, "enable every tool, including the destructive tier 3")
 		enableTier3         = fs.BoolP("enable-tier3", "3", false, "enable the destructive tier 3 tools")
 		disableTier2        = fs.BoolP("disable-tier2", "2", false, "disable the interactive tier 2 tools")
@@ -192,11 +195,18 @@ func parseOptions(argv []string) (options, error) {
 	if explicit["exclude-tools"] {
 		excluded = parseToolCSV(*excludeTools)
 	}
+	redirectEntries := cfg.Security.OAuthRedirectURIs
+	if explicit["oauth-redirect-uris"] {
+		redirectEntries = parseToolCSV(*oauthRedirectURIs)
+	}
 	allowlistEntries := cfg.Security.IPAllowlist
 	if explicit["ip-allowlist"] {
 		allowlistEntries = parseToolCSV(*ipAllowlist)
 	}
 
+	if opts.oauthRedirectURIs, err = parseRedirectURIs(redirectEntries); err != nil {
+		return options{}, err
+	}
 	if opts.ipAllowlist, err = parseIPAllowlist(allowlistEntries); err != nil {
 		return options{}, err
 	}
@@ -258,6 +268,9 @@ func validateOptions(opts options) error {
 
 	if (opts.oauthClientID == "") != (opts.oauthClientSecret == "") {
 		return errors.New("OAuth requires both -oauth-client-id and -oauth-client-secret")
+	}
+	if opts.useOAuth() && len(opts.oauthRedirectURIs) == 0 {
+		return errors.New("OAuth requires at least one -oauth-redirect-uris entry for the client")
 	}
 	if opts.useTLS() != (opts.sslCertFile != "" || opts.sslKeyFile != "") {
 		return errors.New("HTTPS requires both -ssl-certfile and -ssl-keyfile")
@@ -339,7 +352,7 @@ func serveHTTP(ctx context.Context, srv *mcp.Server, opts options) error {
 			scheme = "https"
 		}
 		store := newOAuthStore(fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(opts.host, strconv.Itoa(opts.port))),
-			opts.oauthClientID, opts.oauthClientSecret)
+			opts.oauthClientID, opts.oauthClientSecret, opts.oauthRedirectURIs)
 		store.register(mux)
 		validateOAuth = store.validateToken
 	}

@@ -39,9 +39,11 @@ enable_tier3 = false
 disable_tier2 = false
 
 # A pre-provisioned OAuth client, for MCP clients that use OAuth rather than a
-# static key. Both values are required, and dynamic registration is disabled.
+# static key. All three values are required, and dynamic registration is
+# disabled. Redirect URIs must be loopback; the port may vary per RFC 8252.
 # oauth_client_id     = "my-client"
 # oauth_client_secret = "my-secret"
+# oauth_redirect_uris = ["http://127.0.0.1/callback"]
 
 [tools]
 # An explicit list overrides the tier settings entirely.

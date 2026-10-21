@@ -223,6 +223,7 @@ GNU-style: every option has a `--long` form; the common ones a `-short` alias.
     --allow-insecure-remote                 non-loopback bind with no auth (danger)
     --ssl-certfile / --ssl-keyfile          enable HTTPS
     --oauth-client-id / --oauth-client-secret
+    --oauth-redirect-uris                   comma-separated loopback callbacks
 -a, --enable-all  -3, --enable-tier3  -2, --disable-tier2
     --tools / -x, --exclude-tools           comma-separated
     --ip-allowlist                          comma-separated IPs/CIDRs

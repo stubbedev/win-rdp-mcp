@@ -14,7 +14,11 @@ import (
 
 func newTestOAuth(t *testing.T) (*oauthStore, *http.ServeMux) {
 	t.Helper()
-	store := newOAuthStore("https://win.example:8090", "client-id", "client-secret")
+	redirects, err := parseRedirectURIs([]string{"http://127.0.0.1:33418/callback", "http://[::1]/cb?app=x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newOAuthStore("https://win.example:8090", "client-id", "client-secret", redirects)
 	mux := http.NewServeMux()
 	store.register(mux)
 	return store, mux
@@ -115,11 +119,19 @@ func TestOAuthAuthorizeRejectsBadRequests(t *testing.T) {
 	challenge := challengeFor("verifier-verifier-verifier-verifier")
 
 	tests := map[string]func(url.Values){
-		"non-loopback redirect": func(v url.Values) { v.Set("redirect_uri", "https://evil.example/callback") },
-		"missing PKCE":          func(v url.Values) { v.Del("code_challenge") },
-		"plain PKCE":            func(v url.Values) { v.Set("code_challenge_method", "plain") },
-		"wrong response type":   func(v url.Values) { v.Set("response_type", "token") },
-		"unknown client":        func(v url.Values) { v.Set("client_id", "someone-else") },
+		"non-loopback redirect":  func(v url.Values) { v.Set("redirect_uri", "https://evil.example/callback") },
+		"unregistered path":      func(v url.Values) { v.Set("redirect_uri", "http://127.0.0.1:33418/other") },
+		"unregistered query":     func(v url.Values) { v.Set("redirect_uri", "http://127.0.0.1:33418/callback?next=x") },
+		"unregistered scheme":    func(v url.Values) { v.Set("redirect_uri", "https://127.0.0.1:33418/callback") },
+		"userinfo open redirect": func(v url.Values) { v.Set("redirect_uri", "http://127.0.0.1@evil.example/callback") },
+		"protocol-relative":      func(v url.Values) { v.Set("redirect_uri", "//evil.example/callback") },
+		"fragment":               func(v url.Values) { v.Set("redirect_uri", "http://127.0.0.1:33418/callback#") },
+		"out-of-range port":      func(v url.Values) { v.Set("redirect_uri", "http://127.0.0.1:70000/callback") },
+		"missing redirect":       func(v url.Values) { v.Del("redirect_uri") },
+		"missing PKCE":           func(v url.Values) { v.Del("code_challenge") },
+		"plain PKCE":             func(v url.Values) { v.Set("code_challenge_method", "plain") },
+		"wrong response type":    func(v url.Values) { v.Set("response_type", "token") },
+		"unknown client":         func(v url.Values) { v.Set("client_id", "someone-else") },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -129,6 +141,42 @@ func TestOAuthAuthorizeRejectsBadRequests(t *testing.T) {
 				t.Errorf("authorize should have refused, got a redirect to %s", rec.Header().Get("Location"))
 			}
 		})
+	}
+}
+
+func TestOAuthAuthorizeRedirectsOnlyToRegisteredURIs(t *testing.T) {
+	_, mux := newTestOAuth(t)
+	challenge := challengeFor("verifier-verifier-verifier-verifier")
+
+	for requested, wantPrefix := range map[string]string{
+		"http://127.0.0.1:33418/callback": "http://127.0.0.1:33418/callback?",
+		"http://127.0.0.1:5555/callback":  "http://127.0.0.1:5555/callback?",
+		"http://127.0.0.1/callback":       "http://127.0.0.1/callback?",
+		"http://[::1]:9/cb?app=x":         "http://[::1]:9/cb?app=x&",
+	} {
+		t.Run(requested, func(t *testing.T) {
+			params := validAuthorizeParams(challenge)
+			params.Set("redirect_uri", requested)
+			rec := authorize(t, mux, params)
+			if rec.Code != http.StatusFound {
+				t.Fatalf("authorize status = %d, want 302: %s", rec.Code, rec.Body)
+			}
+			if got := rec.Header().Get("Location"); !strings.HasPrefix(got, wantPrefix) {
+				t.Errorf("Location = %q, want prefix %q", got, wantPrefix)
+			}
+		})
+	}
+}
+
+func TestParseRedirectURIsRejectsNonLoopback(t *testing.T) {
+	_, err := parseRedirectURIs([]string{"https://evil.example/cb", "myapp://cb", "http://127.0.0.1/cb"})
+	if err == nil {
+		t.Fatal("non-loopback redirect URIs must be refused at configuration time")
+	}
+	for _, want := range []string{"evil.example", "myapp://cb"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should name %q", err, want)
+		}
 	}
 }
 
@@ -182,7 +230,7 @@ func TestOAuthDynamicRegistrationIsDisabled(t *testing.T) {
 }
 
 func TestOAuthExpiredTokenIsRejected(t *testing.T) {
-	store := newOAuthStore("https://win.example", "id", "secret")
+	store := newOAuthStore("https://win.example", "id", "secret", nil)
 	store.tokens["stale"] = accessToken{clientID: "id", expiresAt: time.Now().Add(-time.Minute)}
 	if store.validateToken("stale") {
 		t.Error("an expired token must not validate")
@@ -206,14 +254,14 @@ func TestVerifyPKCE(t *testing.T) {
 	}
 }
 
-func TestIsLoopbackRedirectURI(t *testing.T) {
+func TestParseLoopbackRedirectURI(t *testing.T) {
 	for raw, want := range map[string]bool{
 		"http://127.0.0.1:1234/cb": true, "https://localhost/cb": true, "http://[::1]:9/cb": true,
 		"https://example.com/cb": false, "myapp://cb": false, "http://127.0.0.1/cb#frag": false,
-		"": false,
+		"http://127.0.0.1/cb#": false, "http://user@127.0.0.1/cb": false, "": false,
 	} {
-		if got := isLoopbackRedirectURI(raw); got != want {
-			t.Errorf("isLoopbackRedirectURI(%q) = %v, want %v", raw, got, want)
+		if _, err := parseLoopbackRedirectURI(raw); (err == nil) != want {
+			t.Errorf("parseLoopbackRedirectURI(%q) error = %v, want accepted = %v", raw, err, want)
 		}
 	}
 }

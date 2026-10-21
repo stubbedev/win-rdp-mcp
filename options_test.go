@@ -52,6 +52,10 @@ func TestValidateOptionsNetworkGates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	loopbackCallback, err := parseRedirectURIs([]string{"http://127.0.0.1/callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name    string
@@ -87,7 +91,13 @@ func TestValidateOptionsNetworkGates(t *testing.T) {
 		{
 			name: "tier 3 remote is fine behind oauth",
 			opts: options{transport: "streamable-http", host: "0.0.0.0", enabled: all,
+				oauthClientID: "id", oauthClientSecret: "secret", oauthRedirectURIs: loopbackCallback},
+		},
+		{
+			name: "oauth without a registered redirect uri is refused",
+			opts: options{transport: "streamable-http", host: "127.0.0.1", enabled: tier12,
 				oauthClientID: "id", oauthClientSecret: "secret"},
+			wantErr: "oauth-redirect-uris",
 		},
 		{
 			name:    "half an oauth client is refused",

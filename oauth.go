@@ -6,9 +6,13 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	json "encoding/json/v2"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +28,7 @@ import (
 // There is no browser login page here, so this is only safe for a
 // pre-provisioned confidential client: the token exchange demands the client
 // secret that the operator configured out of band. Dynamic registration stays
-// off for the same reason, and redirect URIs must be loopback.
+// off for the same reason, and redirect URIs must be pre-registered loopback URIs.
 
 const (
 	oauthCodeLifetime  = 5 * time.Minute
@@ -52,15 +56,17 @@ type oauthStore struct {
 
 	clientID     string
 	clientSecret string
+	redirectURIs []*url.URL
 	issuer       string
 }
 
-func newOAuthStore(issuer, clientID, clientSecret string) *oauthStore {
+func newOAuthStore(issuer, clientID, clientSecret string, redirectURIs []*url.URL) *oauthStore {
 	return &oauthStore{
 		codes:        map[string]authorizationCode{},
 		tokens:       map[string]accessToken{},
 		clientID:     clientID,
 		clientSecret: clientSecret,
+		redirectURIs: redirectURIs,
 		issuer:       issuer,
 	}
 }
@@ -150,14 +156,17 @@ func (s *oauthStore) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	case method != "S256":
 		oauthError(w, http.StatusBadRequest, "invalid_request", "code_challenge_method must be S256")
 		return
-	case !isLoopbackRedirectURI(redirectURI):
-		oauthError(w, http.StatusBadRequest, "invalid_request", "redirect_uri must be a loopback http(s) URI")
-		return
 	case s.clientID == "" || s.clientSecret == "":
 		oauthError(w, http.StatusInternalServerError, "server_error", "OAuth requires a configured client ID and secret")
 		return
 	case clientID != s.clientID:
 		oauthError(w, http.StatusBadRequest, "invalid_client", "")
+		return
+	}
+
+	target, err := s.registeredRedirect(redirectURI)
+	if err != nil {
+		oauthError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
@@ -172,12 +181,6 @@ func (s *oauthStore) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	// Append to whatever query the client already put on its redirect URI.
-	target, err := url.Parse(redirectURI)
-	if err != nil {
-		oauthError(w, http.StatusBadRequest, "invalid_request", "unparseable redirect_uri")
-		return
-	}
 	params := target.Query()
 	params.Set("code", code)
 	if state != "" {
@@ -185,6 +188,55 @@ func (s *oauthStore) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	target.RawQuery = params.Encode()
 	http.Redirect(w, r, target.String(), http.StatusFound)
+}
+
+func (s *oauthStore) registeredRedirect(raw string) (*url.URL, error) {
+	requested, err := parseLoopbackRedirectURI(raw)
+	if err != nil {
+		return nil, err
+	}
+	port, err := redirectPort(requested)
+	if err != nil {
+		return nil, err
+	}
+	for _, registered := range s.redirectURIs {
+		if !sameRedirectIgnoringPort(registered, requested) {
+			continue
+		}
+		target := *registered
+		target.Host = joinHostPort(registered.Hostname(), port)
+		return &target, nil
+	}
+	return nil, fmt.Errorf("redirect_uri %q is not registered for this client", raw)
+}
+
+func redirectPort(u *url.URL) (string, error) {
+	raw := u.Port()
+	if raw == "" {
+		return "", nil
+	}
+	port, err := strconv.ParseUint(raw, 10, 16)
+	if err != nil {
+		return "", fmt.Errorf("redirect_uri port %q: %w", raw, err)
+	}
+	return strconv.FormatUint(port, 10), nil
+}
+
+func sameRedirectIgnoringPort(registered, requested *url.URL) bool {
+	return registered.Scheme == requested.Scheme &&
+		strings.EqualFold(registered.Hostname(), requested.Hostname()) &&
+		registered.EscapedPath() == requested.EscapedPath() &&
+		registered.RawQuery == requested.RawQuery
+}
+
+func joinHostPort(host, port string) string {
+	if port != "" {
+		return net.JoinHostPort(host, port)
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
 }
 
 func (s *oauthStore) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -272,22 +324,53 @@ func verifyPKCE(verifier, challenge string) bool {
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(challenge)) == 1
 }
 
-// isLoopbackRedirectURI restricts the callback to this machine, which is what
-// makes a browserless authorize endpoint tolerable.
-func isLoopbackRedirectURI(raw string) bool {
+// parseLoopbackRedirectURI restricts the callback to this machine, which is
+// what makes a browserless authorize endpoint tolerable.
+func parseLoopbackRedirectURI(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Fragment != "" {
-		return false
+	if err != nil {
+		return nil, fmt.Errorf("redirect_uri %q: %w", raw, err)
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return false
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
+		return nil, fmt.Errorf("redirect_uri %q: scheme must be http or https", raw)
+	case strings.Contains(raw, "#"):
+		return nil, fmt.Errorf("redirect_uri %q: must not carry a fragment", raw)
+	case u.User != nil:
+		return nil, fmt.Errorf("redirect_uri %q: must not carry user info", raw)
+	case !isLoopbackHost(u.Hostname()):
+		return nil, fmt.Errorf("redirect_uri %q: host must be loopback", raw)
 	}
-	host := strings.ToLower(u.Hostname())
-	if host == "localhost" {
+	return u, nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	addr, err := netip.ParseAddr(host)
 	return err == nil && addr.IsLoopback()
+}
+
+func parseRedirectURIs(entries []string) ([]*url.URL, error) {
+	out := make([]*url.URL, 0, len(entries))
+	var errs []error
+	for _, raw := range entries {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		u, err := parseLoopbackRedirectURI(entry)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		out = append(out, u)
+	}
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("invalid OAuth redirect URIs: %w", errors.Join(errs...))
+	}
+	return out, nil
 }
 
 func randomToken(n int) string {

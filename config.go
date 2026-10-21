@@ -25,6 +25,7 @@ type SecurityConfig struct {
 	DisableTier2      bool     `toml:"disable_tier2"`
 	OAuthClientID     string   `toml:"oauth_client_id"`
 	OAuthClientSecret string   `toml:"oauth_client_secret"`
+	OAuthRedirectURIs []string `toml:"oauth_redirect_uris"`
 }
 
 // ToolsConfig is the [tools] table.
