@@ -117,15 +117,15 @@ nix-vendor-hash:
     #!/usr/bin/env bash
     set -euo pipefail
     FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-    CUR="$(grep -oP 'vendorHash = "\K[^"]+' flake.nix)"
-    sed -i "s#vendorHash = \"${CUR}\"#vendorHash = \"${FAKE}\"#" flake.nix
+    CUR="$(grep -oP 'vendorHash = "\K[^"]+' nix/package.nix)"
+    sed -i "s#vendorHash = \"${CUR}\"#vendorHash = \"${FAKE}\"#" nix/package.nix
     GOT="$(nix build .#default --no-link 2>&1 | grep -oP 'got:\s+\K(sha256-\S+)' | head -1 || true)"
     [ -z "$GOT" ] && GOT="$CUR"
-    sed -i "s#vendorHash = \"${FAKE}\"#vendorHash = \"${GOT}\"#" flake.nix
+    sed -i "s#vendorHash = \"${FAKE}\"#vendorHash = \"${GOT}\"#" nix/package.nix
     echo "vendorHash = ${GOT}"
 
 # ─────────────────────────── Release ───────────────────────────
-# package.json holds the version: flake.nix reads it, the Go binary embeds it,
+# package.json holds the version: nix/package.nix reads it, the Go binary embeds it,
 # and publish.yml refuses a tag that disagrees with it. `npm version` bumps,
 # commits and tags in one go (with `preversion` running vet + test + smoke
 # first), so these are wrappers over the npm scripts rather than a second
