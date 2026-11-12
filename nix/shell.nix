@@ -1,8 +1,8 @@
 {
-  perSystem = { controllerRuntimeDeps, pkgs, self', ... }: {
+  perSystem = { controllerRuntimeDeps, inputs', pkgs, self', ... }: {
     devShells.default = pkgs.mkShell {
       packages = [
-        pkgs.go_latest
+        inputs'.devtools.packages.go
         pkgs.gopls
         pkgs.gotools # goimports, and the rest of the x/tools binaries
         pkgs.go-tools # staticcheck

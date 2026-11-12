@@ -1,9 +1,7 @@
 {
-  perSystem = { controllerRuntimeDeps, lib, pkgs, self', ... }: {
+  perSystem = { controllerRuntimeDeps, inputs', lib, pkgs, self', ... }: {
     packages = {
-      # buildGoLatestModule, not buildGoModule: go.mod asks for the current
-      # language version, and nixpkgs' default `go` trails it by a release.
-      win-rdp-mcp = pkgs.buildGoLatestModule {
+      win-rdp-mcp = (pkgs.buildGoModule.override { go = inputs'.devtools.packages.go; }) {
         pname = "win-rdp-mcp";
         # The version tracks the npm wrapper and the git tag automatically: it
         # is read from package.json, which `npm run release:*` bumps, and which

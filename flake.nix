@@ -7,6 +7,11 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
+    devtools = {
+      url = "github:stubbedev/flakes.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
+    };
   };
 
   # CI (.github/workflows/flake.yml) pushes the built x86_64-linux closure to

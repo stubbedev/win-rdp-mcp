@@ -26,6 +26,10 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-substituters = https://nix.stubbe.dev/c/default/flakes
+            extra-trusted-public-keys = flakes:0Dr9MyPOvA6va2GVzflJcbrChNoZUeIZflyrww3O+YM=
 
       # Recompute the Go module vendorHash from go.mod/go.sum. Setting it to a
       # fake value makes `nix build` fail and report the correct one, which we
