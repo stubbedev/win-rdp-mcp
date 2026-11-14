@@ -43,9 +43,19 @@ export function binaryPath() {
   return join(binDir, `win-rdp-mcp-native${ext}`);
 }
 
+function releaseUrl(asset) {
+  return `https://github.com/${REPO}/releases/download/v${pkg.version}/${asset}`;
+}
+
 function assetUrl() {
   const { os, arch, ext } = target();
-  return `https://github.com/${REPO}/releases/download/v${pkg.version}/win-rdp-mcp_${os}_${arch}${ext}`;
+  return releaseUrl(`win-rdp-mcp_${os}_${arch}${ext}`);
+}
+
+// The controller (`win-rdp-mcp control`) pushes the Windows agent into the RDP
+// session and looks for it as win-rdp-mcp.exe next to its own binary.
+export function agentPath() {
+  return join(binDir, 'win-rdp-mcp.exe');
 }
 
 async function exists(path) {
@@ -57,22 +67,31 @@ async function exists(path) {
   }
 }
 
-// ensureBinary returns the path to the platform binary, downloading it from the
-// matching GitHub release if it is not already present.
-export async function ensureBinary() {
-  const dest = binaryPath();
-  if (await exists(dest)) return dest;
-
+async function download(url, dest) {
   await mkdir(binDir, { recursive: true });
-  const url = assetUrl();
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok || !res.body) {
     throw new Error(`Failed to download ${url}: HTTP ${res.status}`);
   }
   const tmp = `${dest}.download`;
   await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp));
-  await chmod(tmp, 0o755).catch(() => {});
+  await chmod(tmp, 0o755);
   await rm(dest, { force: true });
   await rename(tmp, dest);
   return dest;
+}
+
+// ensureBinary returns the path to the platform binary, downloading it from the
+// matching GitHub release if it is not already present.
+export async function ensureBinary() {
+  const dest = binaryPath();
+  if (await exists(dest)) return dest;
+  return download(assetUrl(), dest);
+}
+
+// ensureAgent fetches the Windows agent the controller pushes into the session.
+export async function ensureAgent() {
+  const dest = agentPath();
+  if (await exists(dest)) return dest;
+  return download(releaseUrl('win-rdp-mcp_windows_amd64.exe'), dest);
 }

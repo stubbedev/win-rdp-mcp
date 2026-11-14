@@ -8,11 +8,12 @@
 // unavoidable on the npx path (Node has no execve). For a truly node-free
 // process, install the binary directly: `go install github.com/stubbedev/win-rdp-mcp@latest`.
 import { spawn } from 'node:child_process';
-import { ensureBinary } from '../scripts/download.mjs';
+import { ensureAgent, ensureBinary } from '../scripts/download.mjs';
 
 let bin;
 try {
   bin = await ensureBinary();
+  if (process.argv[2] === 'control') await ensureAgent();
 } catch (err) {
   console.error(`[win-rdp-mcp] ${err.message}`);
   process.exit(1);

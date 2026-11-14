@@ -171,7 +171,8 @@ GOOS=windows GOARCH=amd64 go build -o win-rdp-mcp.exe github.com/stubbedev/win-r
 npx -y @stubbedev/win-rdp-mcp control --target ... --user ...
 ```
 
-Downloads the prebuilt binary for your platform on first run.
+Downloads the prebuilt binary for your platform on first run, and for `control`
+also the Windows agent it pushes into the session.
 
 > Everything builds and tests on Linux, macOS and Windows — that is how CI checks
 > it. The **controller runs anywhere**; the **agent binary is for Windows**, and
