@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -512,7 +513,12 @@ func fileSearchTool(ctx context.Context, args arguments) (toolResult, error) {
 	return textResult("%s", strings.TrimRight(b.String(), "\n")), nil
 }
 
+var errLocalPathNeedsController = errors.New("local_path names a file on the RDP controller's host, so it only works through win-rdp-mcp control; pass the content as base64 instead")
+
 func fileDownloadTool(_ context.Context, args arguments) (toolResult, error) {
+	if args.has("local_path") {
+		return toolResult{}, errLocalPathNeedsController
+	}
 	path := args.stringOr("path", "")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -522,6 +528,12 @@ func fileDownloadTool(_ context.Context, args arguments) (toolResult, error) {
 }
 
 func fileUploadTool(_ context.Context, args arguments) (toolResult, error) {
+	if args.has("local_path") {
+		return toolResult{}, errLocalPathNeedsController
+	}
+	if !args.has("data_base64") {
+		return toolResult{}, errors.New("data_base64 is required")
+	}
 	path := args.stringOr("path", "")
 	encoded := args.stringOr("data_base64", "")
 	if len(encoded) > maxUploadBase64 {

@@ -227,6 +227,13 @@ func routeTool(name string, schema *jsonschema.Resolved, sess *rdpSession, proxy
 		if proxy == nil {
 			return errorResult(name + " needs the in-session agent, which is disabled (--no-agent)."), nil
 		}
+		if (name == "FileUpload" || name == "FileDownload") && args.has("local_path") {
+			result, err := proxy.transfer(ctx, name, args)
+			if err != nil {
+				return errorResult(name + " error: " + err.Error()), nil
+			}
+			return toCallResult(result), nil
+		}
 		result, err := proxy.call(ctx, name, map[string]any(args))
 		if err != nil {
 			return errorResult(name + " error: " + err.Error()), nil

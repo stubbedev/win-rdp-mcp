@@ -35,6 +35,7 @@ const (
 
 	rpcRestoreClipboard rpcKind = "restoreClipboard"
 	rpcElement          rpcKind = "element"
+	rpcCopyFile         rpcKind = "copyFile"
 )
 
 type rpcMessage struct {
@@ -49,6 +50,8 @@ type rpcMessage struct {
 	IsError   bool           `json:"isError,omitzero"`
 	Text      string         `json:"text,omitzero"`
 	Index     int            `json:"index,omitzero"`
+	Path      string         `json:"path,omitzero"`
+	Bytes     int64          `json:"bytes,omitzero"`
 	X         int            `json:"x,omitzero"`
 	Y         int            `json:"y,omitzero"`
 }
@@ -203,6 +206,9 @@ func serveRPC(ctx context.Context, conn io.ReadWriter, build string, resolved ma
 					result.X, result.Y = at.X, at.Y
 				}
 				out.answer(result, "element lookup")
+			case rpcCopyFile:
+				tools := *enabled.Load()
+				calls.Go(func() { out.answer(copyForController(msg, tools), "file transfer") })
 			case rpcRestoreClipboard:
 				calls.Go(func() {
 					result := rpcMessage{Kind: rpcResult, ID: msg.ID}
@@ -220,6 +226,24 @@ func serveRPC(ctx context.Context, conn io.ReadWriter, build string, resolved ma
 			return err
 		}
 	}
+}
+
+func copyForController(msg rpcMessage, enabled map[string]bool) rpcMessage {
+	result := rpcMessage{Kind: rpcResult, ID: msg.ID}
+	fail := func(err error) rpcMessage {
+		result.IsError = true
+		result.Content = []contentBlock{{Type: "text", Text: err.Error()}}
+		return result
+	}
+	if !enabled[msg.Name] {
+		return fail(fmt.Errorf("%s is not enabled on this agent", msg.Name))
+	}
+	n, err := copyFileCreatingDirs(msg.Text, msg.Path)
+	if err != nil {
+		return fail(fmt.Errorf("copying %s to %s: %w", msg.Text, msg.Path, err))
+	}
+	result.Bytes = n
+	return result
 }
 
 func runRPCTool(ctx context.Context, req rpcMessage, enabled map[string]bool, resolved map[string]*jsonschema.Resolved) rpcMessage {

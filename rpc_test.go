@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -286,5 +288,31 @@ func TestAgentServesNothingUntilConfigured(t *testing.T) {
 	}
 	if got[0].Kind != rpcHello || got[1].ID != "1" || !got[1].IsError || !strings.Contains(firstText(got[1].Content), "not enabled") {
 		t.Fatalf("an unconfigured agent answered %+v", got)
+	}
+}
+
+func TestAgentCopiesFilesForTheController(t *testing.T) {
+	h := startAgent(t, "aaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaa", map[string]bool{"FileUpload": true})
+	conn, err := h.link.wait(context.Background(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	dst := filepath.Join(dir, "nested", "dst.bin")
+	payload := bytes.Repeat([]byte{0, 1, 2, 0xFF}, 300_000)
+	if err := os.WriteFile(src, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n, err := conn.copyFile(context.Background(), "FileUpload", src, dst)
+	if err != nil || n != int64(len(payload)) {
+		t.Fatalf("copy = %d, %v", n, err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("the copied file differs from the source")
+	}
+	if _, err := conn.copyFile(context.Background(), "FileDownload", src, dst); err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("a copy for a disabled tool gave %v", err)
 	}
 }

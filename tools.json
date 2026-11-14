@@ -316,24 +316,28 @@
   },
   {
     "name": "FileDownload",
-    "description": "Read a file as base64-encoded content. Use for binary files.",
+    "description": "Read a file as base64-encoded content, or copy it to local_path on the controller's machine (any size, no base64; RDP controller only).",
     "inputSchema": {
       "type": "object",
-      "properties": { "path": { "type": "string", "description": "File path to download." } },
+      "properties": {
+        "path": { "type": "string", "description": "File path to download." },
+        "local_path": { "type": "string", "description": "Save to this path on the RDP controller's machine instead of returning base64." }
+      },
       "required": ["path"],
       "additionalProperties": false
     }
   },
   {
     "name": "FileUpload",
-    "description": "Write a file from base64-encoded content. Use for binary files.",
+    "description": "Write a file from base64-encoded content, or from local_path on the controller's machine (any size, no base64; RDP controller only).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "path": { "type": "string", "description": "Destination file path." },
-        "data_base64": { "type": "string", "description": "Base64-encoded file content (max 100 MB encoded)." }
+        "data_base64": { "type": "string", "description": "Base64-encoded file content (max 100 MB encoded)." },
+        "local_path": { "type": "string", "description": "Upload this file from the RDP controller's machine instead of data_base64." }
       },
-      "required": ["path", "data_base64"],
+      "required": ["path"],
       "additionalProperties": false
     }
   },

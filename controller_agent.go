@@ -245,6 +245,17 @@ func (c *agentConn) elementCenter(ctx context.Context, index int) (image.Point, 
 	return image.Pt(res.X, res.Y), nil
 }
 
+func (c *agentConn) copyFile(ctx context.Context, tool, src, dst string) (int64, error) {
+	res, err := c.request(ctx, rpcMessage{Kind: rpcCopyFile, Name: tool, Text: src, Path: dst}, tool)
+	if err != nil {
+		return 0, err
+	}
+	if res.IsError {
+		return 0, errors.New(firstText(res.Content))
+	}
+	return res.Bytes, nil
+}
+
 func (c *agentConn) restoreClipboard(ctx context.Context, text string) error {
 	res, err := c.request(ctx, rpcMessage{Kind: rpcRestoreClipboard, Text: text}, "the clipboard restore")
 	if err != nil {
@@ -390,6 +401,49 @@ func (p *agentProxy) runInSession(ctx context.Context, in *desktopInput, command
 	return in.press(keyEnter)
 }
 
+func (p *agentProxy) transfer(ctx context.Context, tool string, args arguments) (toolResult, error) {
+	local, err := filepath.Abs(args.stringOr("local_path", ""))
+	if err != nil {
+		return toolResult{}, fmt.Errorf("resolving local_path: %w", err)
+	}
+	target := args.stringOr("path", "")
+	if tool == "FileUpload" && args.has("data_base64") {
+		return toolResult{}, errors.New("give either local_path or data_base64, not both")
+	}
+	conn, err := p.connection(ctx)
+	if err != nil {
+		return toolResult{}, err
+	}
+	id, err := newCallID()
+	if err != nil {
+		return toolResult{}, err
+	}
+	staged := filepath.Join(p.session.workdir, "xfer-"+id)
+	stagedUNC := agentUNCPath + `\xfer-` + id
+	defer os.Remove(staged)
+	callCtx, cancel := context.WithTimeout(ctx, toolCallTimeout)
+	defer cancel()
+
+	if tool == "FileUpload" {
+		if _, err := copyFileSized(local, staged); err != nil {
+			return toolResult{}, fmt.Errorf("reading %s: %w", local, err)
+		}
+		n, err := conn.copyFile(callCtx, tool, stagedUNC, target)
+		if err != nil {
+			return toolResult{}, err
+		}
+		return textResult("Uploaded %s from %s to %s", humanBytes(n), local, target), nil
+	}
+	n, err := conn.copyFile(callCtx, tool, target, stagedUNC)
+	if err != nil {
+		return toolResult{}, err
+	}
+	if _, err := copyFileCreatingDirs(staged, local); err != nil {
+		return toolResult{}, fmt.Errorf("writing %s: %w", local, err)
+	}
+	return textResult("Downloaded %s from %s to %s", humanBytes(n), target, local), nil
+}
+
 func (p *agentProxy) call(ctx context.Context, name string, args map[string]any) (toolResult, error) {
 	conn, err := p.connection(ctx)
 	if err != nil {
@@ -409,24 +463,37 @@ func (p *agentProxy) call(ctx context.Context, name string, args map[string]any)
 }
 
 func copyFile(src, dst string) error {
+	_, err := copyFileSized(src, dst)
+	return err
+}
+
+func copyFileCreatingDirs(src, dst string) (int64, error) {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return 0, err
+	}
+	return copyFileSized(src, dst)
+}
+
+func copyFileSized(src, dst string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer in.Close()
 	tmp := dst + ".tmp"
 	out, err := os.Create(tmp)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	n, err := io.Copy(out, in)
+	if err != nil {
 		out.Close()
 		os.Remove(tmp)
-		return err
+		return n, err
 	}
 	if err := out.Close(); err != nil {
 		os.Remove(tmp)
-		return err
+		return n, err
 	}
-	return os.Rename(tmp, dst)
+	return n, os.Rename(tmp, dst)
 }
