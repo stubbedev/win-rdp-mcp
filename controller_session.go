@@ -21,7 +21,12 @@ import (
 const (
 	defaultRDPPort      = "3389"
 	dialTimeout         = 15 * time.Second
-	reconnectSettle     = 2 * time.Second
+	connectQuiet        = 500 * time.Millisecond
+	connectPaintWait    = 5 * time.Second
+	captureQuiet        = 150 * time.Millisecond
+	inputReaction       = 500 * time.Millisecond
+	capturePaintWait    = time.Second
+	paintPollInterval   = 20 * time.Millisecond
 	clipboardAckWait    = 5 * time.Second
 	clipboardOfferTries = 5
 	clipboardOfferPause = time.Second
@@ -66,6 +71,7 @@ type rdpSession struct {
 	conn      *rdpConn
 	connected bool
 	pointer   image.Point
+	lastInput time.Time
 
 	mu sync.Mutex
 }
@@ -83,6 +89,7 @@ type rdpConn struct {
 
 	clipboard       atomic.Pointer[string]
 	remoteClipboard atomic.Pointer[string]
+	lastPaint       atomic.Int64
 }
 
 func (c *rdpConn) remoteClipboardText() string {
@@ -167,7 +174,31 @@ func (c *rdpConn) exitReason() string {
 	return reason
 }
 
+func (c *rdpConn) waitQuiet(ctx context.Context, quiet, limit time.Duration, needPaint bool) {
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		last := c.lastPaint.Load()
+		if (last != 0 || !needPaint) && time.Since(time.Unix(0, last)) >= quiet {
+			return
+		}
+		if !sleepCtx(ctx, paintPollInterval) {
+			return
+		}
+	}
+}
+
+func (c *rdpConn) waitPaintAfter(ctx context.Context, since int64, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for c.lastPaint.Load() <= since {
+		if time.Now().After(deadline) || !sleepCtx(ctx, paintPollInterval) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *rdpConn) paint(bitmaps []grdp.Bitmap) {
+	defer c.lastPaint.Store(time.Now().UnixNano())
 	c.fbMu.Lock()
 	defer c.fbMu.Unlock()
 	for i := range bitmaps {
@@ -225,7 +256,7 @@ func (s *rdpSession) ensureConnected(ctx context.Context) error {
 	}
 	s.conn = conn
 	if reconnect {
-		sleepCtx(ctx, reconnectSettle)
+		conn.waitQuiet(ctx, connectQuiet, connectPaintWait, true)
 		logf("RDP session reconnected: %s", s.host)
 		return nil
 	}
@@ -300,7 +331,7 @@ func (s *rdpSession) wake(ctx context.Context) error {
 	if err := s.input().press(keyShift); err != nil {
 		return fmt.Errorf("waking the session: %w", err)
 	}
-	sleepCtx(ctx, 3*time.Second)
+	s.conn.waitQuiet(ctx, connectQuiet, connectPaintWait, true)
 	return nil
 }
 
@@ -332,6 +363,7 @@ func (s *rdpSession) withInput(ctx context.Context, f func(*desktopInput) (toolR
 	if err := s.ensureConnected(ctx); err != nil {
 		return toolResult{}, err
 	}
+	defer func() { s.lastInput = time.Now() }()
 	return f(s.input())
 }
 
@@ -341,6 +373,10 @@ func (s *rdpSession) capture(ctx context.Context) (*image.RGBA, error) {
 	if err := s.ensureConnected(ctx); err != nil {
 		return nil, err
 	}
+	if wait := inputReaction - time.Since(s.lastInput); wait > 0 {
+		sleepCtx(ctx, wait)
+	}
+	s.conn.waitQuiet(ctx, captureQuiet, capturePaintWait, false)
 	return s.conn.capture(), nil
 }
 

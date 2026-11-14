@@ -354,7 +354,7 @@ func (p *agentProxy) launch(ctx context.Context, dismissLeftovers bool) error {
 		steps = append(steps, step{runCommandSettle, func(in *desktopInput) error { return in.press(keyEsc) }})
 	}
 	steps = append(steps,
-		step{runDialogSettle, func(in *desktopInput) error { return in.press(keyWin, keyR) }},
+		step{runDialogSettle, func(in *desktopInput) error { return p.openRunDialog(ctx, in) }},
 		step{runCommandSettle, func(in *desktopInput) error { return in.paste(ctx, launch) }},
 		step{0, func(in *desktopInput) error { return in.press(keyDel) }},
 		step{0, func(in *desktopInput) error { return in.press(keyEnter) }},
@@ -368,6 +368,20 @@ func (p *agentProxy) launch(ctx context.Context, dismissLeftovers bool) error {
 		if !sleepCtx(ctx, step.settle) {
 			return ctx.Err()
 		}
+	}
+	return nil
+}
+
+var errRunDialogDidNotOpen = errors.New("the Run dialog did not open (Win+R produced no screen change; is it blocked by policy or a full-screen app?), so the agent command was not pasted")
+
+func (p *agentProxy) openRunDialog(ctx context.Context, in *desktopInput) error {
+	conn := p.session.conn
+	before := conn.lastPaint.Load()
+	if err := in.press(keyWin, keyR); err != nil {
+		return err
+	}
+	if !conn.waitPaintAfter(ctx, before, runDialogSettle) {
+		return errRunDialogDidNotOpen
 	}
 	return nil
 }

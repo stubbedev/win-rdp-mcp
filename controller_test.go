@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp"
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp/protocol/pdu"
@@ -330,5 +331,49 @@ func TestLaunchCommandCarriesTokenAndTierFlags(t *testing.T) {
 	}
 	if p.link.token == other.link.token {
 		t.Fatal("two controllers drew the same token, so a stale agent could not be told apart")
+	}
+}
+
+func TestWaitQuietReturnsAtOnceWhenIdle(t *testing.T) {
+	conn := &rdpConn{}
+	start := time.Now()
+	conn.waitQuiet(context.Background(), 100*time.Millisecond, time.Second, false)
+	if time.Since(start) > 50*time.Millisecond {
+		t.Fatalf("an idle screen waited %s", time.Since(start))
+	}
+}
+
+func TestWaitQuietWaitsOutRecentPaints(t *testing.T) {
+	conn := &rdpConn{}
+	conn.lastPaint.Store(time.Now().UnixNano())
+	start := time.Now()
+	conn.waitQuiet(context.Background(), 100*time.Millisecond, time.Second, false)
+	if waited := time.Since(start); waited < 80*time.Millisecond || waited > 500*time.Millisecond {
+		t.Fatalf("waited %s after a fresh paint, want about the 100ms quiet window", waited)
+	}
+}
+
+func TestWaitQuietGivesUpAtItsLimit(t *testing.T) {
+	conn := &rdpConn{}
+	start := time.Now()
+	conn.waitQuiet(context.Background(), 50*time.Millisecond, 150*time.Millisecond, true)
+	if waited := time.Since(start); waited < 140*time.Millisecond || waited > 600*time.Millisecond {
+		t.Fatalf("waited %s for a first paint that never came, want the 150ms limit", waited)
+	}
+}
+
+func TestWaitPaintAfterSeesOnlyNewPaints(t *testing.T) {
+	conn := &rdpConn{}
+	before := time.Now().UnixNano()
+	conn.lastPaint.Store(before)
+	if conn.waitPaintAfter(context.Background(), before, 60*time.Millisecond) {
+		t.Fatal("a paint from before the input counted as a reaction to it")
+	}
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		conn.lastPaint.Store(time.Now().UnixNano())
+	}()
+	if !conn.waitPaintAfter(context.Background(), before, time.Second) {
+		t.Fatal("a fresh paint was not seen")
 	}
 }
