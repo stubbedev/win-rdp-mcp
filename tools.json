@@ -206,7 +206,7 @@
   },
   {
     "name": "ReconnectSession",
-    "description": "Reconnect a disconnected Windows desktop session to the console via tscon, so screenshots and UI automation work with no RDP client attached.",
+    "description": "Reconnect a disconnected Windows desktop session to the console, so screenshots and UI automation work with no RDP client attached.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -476,15 +476,14 @@
   },
   {
     "name": "OCR",
-    "description": "Extract text from the screen. Uses tesseract when on PATH, else the Windows built-in OCR engine.",
+    "description": "Extract text from the screen with the Windows built-in OCR engine (needs an OCR language pack for the user profile).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "left": { "type": "integer", "default": 0, "description": "Left edge of the region; all zero = full screen." },
         "top": { "type": "integer", "default": 0 },
         "right": { "type": "integer", "default": 0 },
-        "bottom": { "type": "integer", "default": 0 },
-        "lang": { "type": "string", "default": "eng", "description": "Tesseract language code." }
+        "bottom": { "type": "integer", "default": 0 }
       },
       "additionalProperties": false
     }

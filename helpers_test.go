@@ -108,68 +108,6 @@ func TestDecodeArguments(t *testing.T) {
 	}
 }
 
-// parseUserSession has to read `query session` output, including the localised
-// state names a non-English Windows prints.
-func TestParseUserSession(t *testing.T) {
-	tests := []struct {
-		name           string
-		out            string
-		wantID         string
-		wantDisconnect bool
-		wantFound      bool
-	}{
-		{
-			name: "active console session",
-			out: ` SESSIONNAME       USERNAME                 ID  STATE   TYPE        DEVICE
- services                                    0  Disc
->console           alice                     1  Active  wdcon`,
-			wantID: "1", wantFound: true,
-		},
-		{
-			name: "disconnected rdp session",
-			out: ` SESSIONNAME       USERNAME                 ID  STATE   TYPE        DEVICE
- services                                    0  Disc
-                   alice                     2  Disc`,
-			wantID: "2", wantDisconnect: true, wantFound: true,
-		},
-		{
-			name: "localised disconnected state",
-			out: ` 会话名            用户名                   ID  状态
- services                                    0  Disc
-                   alice                     3  已断开`,
-			wantID: "3", wantDisconnect: true, wantFound: true,
-		},
-		{
-			name:      "no user logged on",
-			out:       " SESSIONNAME       USERNAME    ID  STATE\n services                      0  Disc",
-			wantFound: false,
-		},
-		{
-			name:      "empty output",
-			out:       "",
-			wantFound: false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			id, disconnected, found := parseUserSession(tc.out)
-			if found != tc.wantFound {
-				t.Fatalf("found = %v, want %v", found, tc.wantFound)
-			}
-			if !found {
-				return
-			}
-			if id != tc.wantID {
-				t.Errorf("session id = %q, want %q", id, tc.wantID)
-			}
-			if disconnected != tc.wantDisconnect {
-				t.Errorf("disconnected = %v, want %v", disconnected, tc.wantDisconnect)
-			}
-		})
-	}
-}
-
 func TestPSQuoteEscapesSingleQuotes(t *testing.T) {
 	// A path or title carrying a quote must stay data, never become script. In
 	// a PowerShell single-quoted string the only escape is a doubled quote, so

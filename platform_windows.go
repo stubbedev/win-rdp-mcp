@@ -575,65 +575,23 @@ func utf16Units(r rune) []uint16 {
 	return []uint16{uint16(r)}
 }
 
-// pressKeys presses every named key in order and releases them in reverse, so
+// pressKeys presses every key in order and releases them in reverse, so
 // "ctrl+shift+esc" is a real chord rather than three taps.
-func pressKeys(keys []string) error {
+func pressKeys(keys ...keyDef) error {
 	initPlatform()
-	codes := make([]uint16, 0, len(keys))
-	for _, k := range keys {
-		vk, ok := virtualKey(k)
-		if !ok {
-			return fmt.Errorf("unknown key %q", k)
-		}
-		codes = append(codes, vk)
-	}
-
 	key := func(vk uint16, flags uint32) winInput {
 		in := winInput{typ: inputKeyboard}
 		*in.keyboard() = keybdInput{wVk: vk, dwFlags: flags}
 		return in
 	}
-	var inputs []winInput
-	for _, vk := range codes {
-		inputs = append(inputs, key(vk, 0))
+	inputs := make([]winInput, 0, 2*len(keys))
+	for _, k := range keys {
+		inputs = append(inputs, key(k.vk, 0))
 	}
-	for i := len(codes) - 1; i >= 0; i-- {
-		inputs = append(inputs, key(codes[i], keyEventKeyUp))
+	for i := len(keys) - 1; i >= 0; i-- {
+		inputs = append(inputs, key(keys[i].vk, keyEventKeyUp))
 	}
 	return sendInputs(inputs)
-}
-
-var namedKeys = map[string]uint16{
-	"ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10,
-	"win": 0x5B, "super": 0x5B, "cmd": 0x5B, "meta": 0x5B,
-	"tab": 0x09, "enter": 0x0D, "return": 0x0D, "esc": 0x1B, "escape": 0x1B,
-	"space": 0x20, "backspace": 0x08, "delete": 0x2E, "del": 0x2E,
-	"insert": 0x2D, "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
-	"up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
-	"capslock": 0x14, "printscreen": 0x2C, "numlock": 0x90,
-	"volumemute": 0xAD, "volumedown": 0xAE, "volumeup": 0xAF,
-}
-
-func virtualKey(name string) (uint16, bool) {
-	k := strings.ToLower(strings.TrimSpace(name))
-	if vk, ok := namedKeys[k]; ok {
-		return vk, true
-	}
-	if len(k) > 1 && k[0] == 'f' {
-		var n int
-		if _, err := fmt.Sscanf(k[1:], "%d", &n); err == nil && n >= 1 && n <= 24 {
-			return uint16(0x6F + n), true
-		}
-	}
-	if len(k) == 1 {
-		switch c := k[0]; {
-		case c >= 'a' && c <= 'z':
-			return uint16(c - 'a' + 0x41), true
-		case c >= '0' && c <= '9':
-			return uint16(c - '0' + 0x30), true
-		}
-	}
-	return 0, false
 }
 
 // ── Clipboard ────────────────────────────────────────────────────────────────

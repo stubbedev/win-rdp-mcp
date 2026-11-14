@@ -1,5 +1,5 @@
 {
-  perSystem = { controllerRuntimeDeps, inputs', lib, pkgs, self', ... }: {
+  perSystem = { inputs', lib, pkgs, self', ... }: {
     packages = {
       win-rdp-mcp = (pkgs.buildGoModule.override { go = inputs'.devtools.packages.go; }) {
         pname = "win-rdp-mcp";
@@ -22,40 +22,34 @@
         # vendorHash is kept current by .github/workflows/flake.yml on any
         # change to go.mod / go.sum. To refresh it by hand, run
         # `just nix-vendor-hash`.
-        vendorHash = "sha256-bJcV71iJYEIuYsojTOf6KYCmr38m03BbFJAHuCeLkkg=";
+        vendorHash = "sha256-mbmMzH3S4jDbLUIMDlrZawov5k5UAQzd96W5pn9W9rw=";
 
         # The version comes from the embedded package.json at runtime, so no
         # -X main.Version wiring is needed here.
         ldflags = [ "-s" "-w" ];
+
+        subPackages = [ "." ];
 
         # The test suite is the merge gate, so the flake runs it too: a
         # `nix build` that succeeds means the same checks CI runs passed.
         doCheck = true;
 
         # The controller pushes the Windows agent into the RDP session and
-        # looks for it next to its own binary, so a Linux build has to carry
+        # looks for it next to its own binary, so every build has to carry
         # the cross-compiled .exe. Without it every agent-backed tool blocks
         # on a bootstrap that already failed and times out the caller.
-        postBuild = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+        postBuild = ''
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
             -trimpath -ldflags "-s -w" -o $GOPATH/bin/win-rdp-mcp.exe .
-        '';
-
-        # Put the controller's runtime tools on the binary's PATH so
-        # `nix run` works as a controller with nothing else installed.
-        nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.makeWrapper ];
-        postFixup = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-          wrapProgram $out/bin/win-rdp-mcp \
-            --prefix PATH : ${lib.makeBinPath controllerRuntimeDeps}
         '';
 
         meta = {
           description = "MCP server for remote control of a Windows desktop over RDP";
           homepage = "https://github.com/stubbedev/win-rdp-mcp";
-          license = lib.licenses.mit;
+          license = lib.licenses.gpl3Only;
           mainProgram = "win-rdp-mcp";
-          # Builds and tests everywhere; the controller runs on Linux and
-          # the agent on Windows.
+          # The controller runs on any platform; the agent's system tools
+          # need Windows.
           platforms = lib.platforms.unix ++ lib.platforms.windows;
         };
       };

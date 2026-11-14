@@ -47,6 +47,9 @@ jobs:
       - name: Build
         run: go build -o win-rdp-mcp .
 
+      - name: Build (macOS)
+        run: GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null .
+
       - name: Build (windows)
         # The deployment target. A Linux-only build would not catch a break in
         # the Win32 layer, which is most of this server.
@@ -59,9 +62,6 @@ jobs:
           unzip -o -q dist/win-rdp-mcp_windows_amd64.mcpb -d dist/bundle
           test -f dist/bundle/icon.png
           npx -y @anthropic-ai/mcpb validate dist/bundle/manifest.json
-
-      - name: Smoke — tools/list over stdio
-        run: node scripts/smoke.mjs
 
   windows:
     # The Win32 layer only really compiles-and-runs here. Nothing in the test
@@ -79,6 +79,3 @@ jobs:
 
       - name: Test
         run: go test ./...
-
-      - name: Smoke — tools/list over stdio
-        run: node scripts/smoke.mjs

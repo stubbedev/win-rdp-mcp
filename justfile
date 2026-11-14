@@ -51,9 +51,9 @@ test:
 test-race:
     go test -race ./...
 
-# End-to-end: drive the built binary over stdio and assert tools/list.
+# End-to-end: drive the server over stdio and assert tools/list and a tool call.
 smoke:
-    npm run smoke
+    go test -count=1 -run TestStdioSmoke .
 
 # Pack and validate the .mcpb bundle for one-click Claude Desktop install.
 bundle:
@@ -83,19 +83,8 @@ run-http *ARGS:
 
 # List the tools the server would expose with the given flags.
 tools *ARGS:
-    #!/usr/bin/env bash
-    set -euo pipefail
     go build -o {{binary}} .
-    { printf '%s\n' \
-        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"just","version":"0"}}}' \
-        '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-        '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'; sleep 1; } \
-    | ./{{binary}} --transport stdio {{ARGS}} 2>/dev/null \
-    | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
-        const r=d.trim().split("\n").map(JSON.parse).find(m=>m.id===2);
-        console.log(r.result.tools.length+" tools:");
-        for (const t of r.result.tools) console.log("  "+t.name);
-      });'
+    go run ./internal/cmd/listtools ./{{binary}} {{ARGS}}
 
 # ─────────────────────────── Nix ───────────────────────────
 

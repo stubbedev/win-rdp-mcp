@@ -1,5 +1,5 @@
 {
-  perSystem = { controllerRuntimeDeps, inputs', pkgs, self', ... }: {
+  perSystem = { inputs', pkgs, self', ... }: {
     devShells.default = pkgs.mkShell {
       packages = [
         inputs'.devtools.packages.go
@@ -8,11 +8,11 @@
         pkgs.go-tools # staticcheck
         pkgs.delve
         pkgs.just
-        pkgs.nodejs_24 # the npm wrapper, the smoke test and `just tools`
+        pkgs.nodejs_24 # the npm wrapper and its release scripts
         pkgs.zip
         pkgs.unzip
         pkgs.nixpkgs-fmt
-      ] ++ controllerRuntimeDeps;
+      ];
 
       shellHook = ''
         echo "win-rdp-mcp ${self'.packages.default.version} dev shell — $(go version)"

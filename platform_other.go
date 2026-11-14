@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"image"
 	"time"
@@ -33,9 +34,21 @@ func mouseMove(int, int, time.Duration) error             { return errWindowsOnl
 func mouseDrag(int, int, int, int, time.Duration) error   { return errWindowsOnly }
 func mouseScroll(int, int, int, bool) error               { return errWindowsOnly }
 func typeText(string) error                               { return errWindowsOnly }
-func pressKeys([]string) error                            { return errWindowsOnly }
+func pressKeys(...keyDef) error                           { return errWindowsOnly }
 
 func getClipboard() (string, error) { return "", errWindowsOnly }
 func setClipboard(string) error     { return errWindowsOnly }
 func lockWorkstation() error        { return errWindowsOnly }
 func systemLanguage() string        { return "unknown" }
+
+func attachSessionToConsole(bool) (bool, error) { return false, errWindowsOnly }
+func launchApp(string, string) error            { return errWindowsOnly }
+func playAudio(context.Context, string) error   { return errWindowsOnly }
+
+func listServices() ([]serviceInfo, error)                   { return nil, errWindowsOnly }
+func startService(context.Context, string) (string, error)   { return "", errWindowsOnly }
+func stopService(context.Context, string) (string, error)    { return "", errWindowsOnly }
+func listTasks() ([]scheduledTask, error)                    { return nil, errWindowsOnly }
+func createTask(string, commandLine, taskTrigger) error      { return errWindowsOnly }
+func deleteTask(string) error                                { return errWindowsOnly }
+func readEventLog(string, uint8, int) ([]eventRecord, error) { return nil, errWindowsOnly }

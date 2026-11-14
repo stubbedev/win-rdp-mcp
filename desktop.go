@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 )
@@ -164,10 +163,10 @@ func typeTool(_ context.Context, args arguments) (toolResult, error) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if args.boolOr("clear", false) {
-		if err := pressKeys([]string{"ctrl", "a"}); err != nil {
+		if err := pressKeys(keyCtrl, keyA); err != nil {
 			return toolResult{}, err
 		}
-		if err := pressKeys([]string{"delete"}); err != nil {
+		if err := pressKeys(keyDel); err != nil {
 			return toolResult{}, err
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -176,7 +175,7 @@ func typeTool(_ context.Context, args arguments) (toolResult, error) {
 		return toolResult{}, err
 	}
 	if args.boolOr("press_enter", false) {
-		if err := pressKeys([]string{"enter"}); err != nil {
+		if err := pressKeys(keyEnter); err != nil {
 			return toolResult{}, err
 		}
 	}
@@ -214,16 +213,11 @@ func moveTool(_ context.Context, args arguments) (toolResult, error) {
 
 func shortcutTool(_ context.Context, args arguments) (toolResult, error) {
 	raw := args.stringOr("keys", "")
-	var keys []string
-	for _, part := range strings.Split(raw, "+") {
-		if k := strings.TrimSpace(part); k != "" {
-			keys = append(keys, k)
-		}
+	keys, err := parseKeyCombo(raw)
+	if err != nil {
+		return toolResult{}, err
 	}
-	if len(keys) == 0 {
-		return toolResult{}, fmt.Errorf("no keys given")
-	}
-	if err := pressKeys(keys); err != nil {
+	if err := pressKeys(keys...); err != nil {
 		return toolResult{}, err
 	}
 	return textResult("Executed shortcut: %s", raw), nil
@@ -256,7 +250,7 @@ func focusWindowTool(_ context.Context, args arguments) (toolResult, error) {
 }
 
 func minimizeAllTool(_ context.Context, _ arguments) (toolResult, error) {
-	if err := pressKeys([]string{"win", "d"}); err != nil {
+	if err := pressKeys(keyWin, mustLookupKey("d")); err != nil {
 		return toolResult{}, err
 	}
 	return textResult("Minimized all windows"), nil
@@ -271,11 +265,7 @@ func appTool(ctx context.Context, args arguments) (toolResult, error) {
 		if name == "" {
 			return toolResult{}, fmt.Errorf("launch requires a name")
 		}
-		cmd := "Start-Process " + psQuote(name)
-		if a := args.stringOr("args", ""); a != "" {
-			cmd += " -ArgumentList " + psQuote(a)
-		}
-		if _, err := runPowerShell(ctx, cmd, 10*time.Second); err != nil {
+		if err := launchApp(name, args.stringOr("args", "")); err != nil {
 			return toolResult{}, fmt.Errorf("launching %s: %w", name, err)
 		}
 		return textResult("Launched %s", name), nil
@@ -367,113 +357,19 @@ func reconnectSessionTool(ctx context.Context, args arguments) (toolResult, erro
 	return textResult("Session connected to console"), nil
 }
 
-// ensureSessionConnected attaches the interactive session to the console when
+// ensureSessionConnected attaches this process's session to the console when
 // it is disconnected. Without a console the desktop has nothing to render to,
 // so screenshots and UI automation fail — which is exactly the state an RDP
 // client leaves behind when it closes.
 func ensureSessionConnected(ctx context.Context, force bool) error {
-	out, err := runCommand(ctx, 10*time.Second, "query", "session")
+	attached, err := attachSessionToConsole(force)
 	if err != nil {
-		return fmt.Errorf("querying sessions: %w", err)
+		return err
 	}
-
-	sessionID, disconnected, ok := parseUserSession(out)
-	if !ok {
-		return fmt.Errorf("no user session found")
+	if attached {
+		sleepCtx(ctx, time.Second)
 	}
-	if !disconnected && !force {
-		return nil
-	}
-	if _, err := runCommand(ctx, 10*time.Second, "tscon", sessionID, "/dest:console"); err != nil {
-		return fmt.Errorf("tscon %s /dest:console: %w", sessionID, err)
-	}
-	// tscon returns before the session is drawable; a screenshot fired straight
-	// after still comes back black.
-	time.Sleep(time.Second)
 	return nil
-}
-
-// disconnectedStates covers the localised spellings `query session` prints for
-// a disconnected session — the tool has to work on a non-English Windows too.
-var disconnectedStates = map[string]bool{
-	"disc": true, "disconnected": true, "断开": true, "已断开": true,
-}
-
-// parseUserSession picks the interactive user's session out of `query session`
-// output and reports whether it is disconnected.
-//
-// The listing is fixed-width, and the SESSIONNAME column is empty for a
-// disconnected session — so a row can be "console alice 1 Active" or just
-// "alice 2 Disc", and splitting on whitespace alone cannot tell a lone
-// username from a lone session name. The indentation does: a session name
-// starts at the left margin, a username never does.
-func parseUserSession(out string) (id string, disconnected bool, found bool) {
-	lines := strings.Split(out, "\n")
-	if len(lines) < 2 {
-		return "", false, false
-	}
-
-	for _, raw := range lines[1:] {
-		// The leading '>' marks the current session and shifts nothing else.
-		line := strings.TrimPrefix(strings.TrimRight(raw, " \t\r"), ">")
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-
-		idIndex := slices.IndexFunc(fields, isDigits)
-		if idIndex < 0 || idIndex+1 >= len(fields) {
-			continue
-		}
-
-		var sessionName string
-		switch idIndex {
-		case 1:
-			// One field before the ID: either a session name at the margin, or
-			// an indented username on a row whose session name is blank.
-			if indentOf(line, fields[0]) <= sessionNameColumn {
-				sessionName = fields[0]
-			}
-		case 2:
-			sessionName = fields[0]
-		default:
-			continue
-		}
-
-		// A row with no user is a listener or the services session, not
-		// somebody's desktop.
-		hasUser := idIndex == 2 || (idIndex == 1 && sessionName == "")
-		if !hasUser {
-			continue
-		}
-		switch strings.ToLower(sessionName) {
-		case "services", "rdp-tcp":
-			continue
-		}
-		return fields[idIndex], disconnectedStates[strings.ToLower(fields[idIndex+1])], true
-	}
-	return "", false, false
-}
-
-// sessionNameColumn is how far the SESSIONNAME column can be indented before a
-// token must instead belong to USERNAME. `query session` prints one leading
-// space; the username column sits far to the right of it.
-const sessionNameColumn = 2
-
-func indentOf(line, token string) int {
-	return strings.Index(line, token)
-}
-
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // ── OCR ──────────────────────────────────────────────────────────────────────
@@ -499,7 +395,7 @@ func ocrTool(ctx context.Context, args arguments) (toolResult, error) {
 	}
 	tmp.Close()
 
-	text, err := runOCR(ctx, tmp.Name(), args.stringOr("lang", "eng"))
+	text, err := windowsBuiltinOCR(ctx, tmp.Name())
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -507,20 +403,6 @@ func ocrTool(ctx context.Context, args arguments) (toolResult, error) {
 		return textResult("(no text detected)"), nil
 	}
 	return textResult("%s", strings.TrimSpace(text)), nil
-}
-
-// runOCR prefers tesseract when it is on PATH, and otherwise drives the OCR
-// engine that ships with Windows. Neither is a hard dependency of the server.
-func runOCR(ctx context.Context, imagePath, lang string) (string, error) {
-	if bin, err := exec.LookPath("tesseract"); err == nil {
-		out, err := runCommand(ctx, 60*time.Second, bin, imagePath, "stdout", "-l", lang)
-		if err == nil {
-			return out, nil
-		}
-		// Fall through to the built-in engine: a missing language pack is the
-		// common failure, and Windows OCR needs no packs.
-	}
-	return windowsBuiltinOCR(ctx, imagePath)
 }
 
 func windowsBuiltinOCR(ctx context.Context, imagePath string) (string, error) {
@@ -552,7 +434,7 @@ try {
 
 	out, err := runPowerShell(ctx, script, 60*time.Second)
 	if err != nil {
-		return "", fmt.Errorf("no usable OCR engine (install tesseract, or a Windows OCR language pack): %w", err)
+		return "", fmt.Errorf("the Windows OCR engine failed (is an OCR language pack installed?): %w", err)
 	}
 	return out, nil
 }

@@ -232,113 +232,7 @@ func systemInfoTool(ctx context.Context, args arguments) (toolResult, error) {
 	return textResult("%s", strings.TrimRight(b.String(), "\n")), nil
 }
 
-// ── Services, scheduled tasks, event log ─────────────────────────────────────
-//
-// ponytail: these four shell out to PowerShell exactly as the upstream server
-// does. The Win32 service APIs would avoid a subprocess, but Get-ScheduledTask
-// and Get-WinEvent have no equivalent worth hand-rolling, and a consistent
-// formatting story across all of them is worth more than one saved fork.
-
-func serviceListTool(ctx context.Context, args arguments) (toolResult, error) {
-	cmd := "Get-Service"
-	if f := args.stringOr("filter", ""); f != "" {
-		cmd = fmt.Sprintf(`$f = %s; Get-Service | Where-Object { $_.DisplayName -like "*$f*" -or $_.Name -like "*$f*" }`, psQuote(f))
-	}
-	return psTable(ctx, cmd+" | Format-Table Name, DisplayName, Status -AutoSize", 30*time.Second)
-}
-
-func serviceStartTool(ctx context.Context, args arguments) (toolResult, error) {
-	return psTable(ctx, "Start-Service -Name "+psQuote(args.stringOr("name", ""))+
-		" -PassThru | Format-Table Name, Status -AutoSize", 60*time.Second)
-}
-
-func serviceStopTool(ctx context.Context, args arguments) (toolResult, error) {
-	return psTable(ctx, "Stop-Service -Name "+psQuote(args.stringOr("name", ""))+
-		" -Force -PassThru | Format-Table Name, Status -AutoSize", 60*time.Second)
-}
-
-func taskListTool(ctx context.Context, args arguments) (toolResult, error) {
-	cmd := "Get-ScheduledTask"
-	if f := args.stringOr("filter", ""); f != "" {
-		cmd = fmt.Sprintf(`$f = %s; Get-ScheduledTask | Where-Object { $_.TaskName -like "*$f*" }`, psQuote(f))
-	}
-	return psTable(ctx, cmd+" | Format-Table TaskName, State, TaskPath -AutoSize", 60*time.Second)
-}
-
-// validSchedules is closed on purpose: /SC takes a fixed vocabulary, and
-// rejecting anything else here keeps unvetted text out of the schtasks line.
-var validSchedules = []string{"ONCE", "DAILY", "WEEKLY", "MONTHLY", "ONSTART", "ONLOGON", "ONIDLE"}
-
-func taskCreateTool(ctx context.Context, args arguments) (toolResult, error) {
-	schedule := strings.ToUpper(args.stringOr("schedule", ""))
-	if !slices.Contains(validSchedules, schedule) {
-		return toolResult{}, fmt.Errorf("unknown schedule %q (use one of %s)", schedule, strings.Join(validSchedules, ", "))
-	}
-	out, err := runCommand(ctx, 60*time.Second, "schtasks",
-		"/Create", "/TN", args.stringOr("name", ""), "/TR", args.stringOr("command", ""), "/SC", schedule, "/F")
-	if err != nil {
-		return toolResult{}, err
-	}
-	return textResult("%s", out), nil
-}
-
-func taskDeleteTool(ctx context.Context, args arguments) (toolResult, error) {
-	out, err := runCommand(ctx, 30*time.Second, "schtasks", "/Delete", "/TN", args.stringOr("name", ""), "/F")
-	if err != nil {
-		return toolResult{}, err
-	}
-	return textResult("%s", out), nil
-}
-
-var eventLevels = map[string]int{
-	"critical": 1, "error": 2, "warning": 3, "information": 4, "verbose": 5,
-}
-
-func eventLogTool(ctx context.Context, args arguments) (toolResult, error) {
-	logName := psQuote(args.stringOr("log_name", "System"))
-	count := min(max(args.intOr("count", 20), 1), 1000)
-
-	cmd := fmt.Sprintf("Get-WinEvent -LogName %s -MaxEvents %d", logName, count)
-	if level := strings.ToLower(args.stringOr("level", "")); level != "" {
-		num, ok := eventLevels[level]
-		if !ok {
-			return toolResult{}, fmt.Errorf("unknown level %q", level)
-		}
-		cmd = fmt.Sprintf("Get-WinEvent -FilterHashtable @{LogName=%s;Level=%d} -MaxEvents %d", logName, num, count)
-	}
-	return psTable(ctx, cmd+" | Format-Table TimeCreated, Id, LevelDisplayName, Message -AutoSize -Wrap", 60*time.Second)
-}
-
-func psTable(ctx context.Context, command string, timeout time.Duration) (toolResult, error) {
-	out, err := runPowerShell(ctx, command, timeout)
-	if err != nil {
-		return toolResult{}, err
-	}
-	if out == "" {
-		return textResult("(no output)"), nil
-	}
-	return textResult("%s", out), nil
-}
-
 // ── Network ──────────────────────────────────────────────────────────────────
-
-func pingTool(ctx context.Context, args arguments) (toolResult, error) {
-	host := args.stringOr("host", "")
-	count := min(max(args.intOr("count", 4), 1), 20)
-
-	// The count flag differs between Windows and everywhere else, and the
-	// server is testable on Linux, so pick by platform rather than assuming.
-	flag := "-c"
-	if runtime.GOOS == "windows" {
-		flag = "-n"
-	}
-	timeout := time.Duration(count*5+10) * time.Second
-	out, err := runCommand(ctx, timeout, "ping", flag, strconv.Itoa(count), host)
-	if err != nil && out == "" {
-		return toolResult{}, err
-	}
-	return textResult("%s", out), nil
-}
 
 func portCheckTool(ctx context.Context, args arguments) (toolResult, error) {
 	target := args.stringOr("host", "")
@@ -452,24 +346,8 @@ func playSoundTool(ctx context.Context, args arguments) (toolResult, error) {
 		path = tmp.Name()
 	}
 
-	var script string
-	var timeout time.Duration
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".mp3", ".ogg", ".wma", ".m4a":
-		// SoundPlayer only understands WAV; compressed formats go through the
-		// WPF MediaPlayer, polled until it reaches the end of the track.
-		script = "Add-Type -AssemblyName presentationCore; " +
-			"$p = New-Object System.Windows.Media.MediaPlayer; " +
-			"$p.Open([uri]" + psQuote(path) + "); $p.Play(); Start-Sleep -Milliseconds 500; " +
-			"while ($p.NaturalDuration.HasTimeSpan -and $p.Position -lt $p.NaturalDuration.TimeSpan) " +
-			"{ Start-Sleep -Milliseconds 200 }; $p.Close()"
-		timeout = 2 * time.Minute
-	default:
-		script = "(New-Object System.Media.SoundPlayer " + psQuote(path) + ").PlaySync()"
-		timeout = 30 * time.Second
-	}
-	if _, err := runPowerShell(ctx, script, timeout); err != nil {
-		return toolResult{}, err
+	if err := playAudio(ctx, path); err != nil {
+		return toolResult{}, fmt.Errorf("playing %s: %w", path, err)
 	}
 	return textResult("Played: %s", path), nil
 }

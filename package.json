@@ -2,7 +2,7 @@
   "name": "@stubbedev/win-rdp-mcp",
   "version": "0.1.2",
   "description": "Control a Windows machine over RDP as MCP tools — screenshots, mouse/keyboard, PowerShell, files, registry. Give it only RDP credentials.",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "type": "module",
   "bin": {
     "win-rdp-mcp": "bin/cli.mjs"
@@ -20,7 +20,7 @@
     "build": "go build -o win-rdp-mcp .",
     "test": "go test ./...",
     "bundle": "go build -o win-rdp-mcp . && packaging/mcpb/pack.sh ./win-rdp-mcp $(case $(uname -s) in Darwin) echo darwin;; MINGW*|MSYS*) echo win32;; *) echo linux;; esac) dist/win-rdp-mcp.mcpb",
-    "smoke": "go build -o win-rdp-mcp . && node scripts/smoke.mjs",
+    "smoke": "go test -count=1 -run TestStdioSmoke .",
     "preversion": "go vet ./... && npm run test && npm run smoke",
     "release:patch": "npm version patch && git push origin HEAD --follow-tags",
     "release:minor": "npm version minor && git push origin HEAD --follow-tags",

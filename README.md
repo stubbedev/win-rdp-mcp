@@ -11,6 +11,8 @@ WinRM, no open port beyond RDP.
 
 Originally a Go port of [dddabtc/winremote-mcp](https://github.com/dddabtc/winremote-mcp);
 it has since grown the RDP controller so the target needs no agent installed.
+It is pure Go: one static binary per side, with no external programs needed on
+either machine.
 
 ---
 
@@ -19,15 +21,15 @@ it has since grown the RDP controller so the target needs no agent installed.
 Two halves, one binary:
 
 ```
-  your machine (Linux)                          the Windows target
+  your machine (any OS)                         the Windows target
 ┌──────────────────────────────┐              ┌──────────────────────────┐
 │ win-rdp-mcp control          │              │                          │
 │  the MCP server your AI uses │              │                          │
 │                              │── RDP/3389 ──▶│  live desktop session    │
-│  • xfreerdp holds a session  │   screenshots │  (logged in for you)     │
-│    in a headless Xvfb        │   + input     │                          │
+│  • a built-in RDP client     │   screenshots │  (logged in for you)     │
+│    holds the session         │   + input     │                          │
 │  • screenshots + mouse/keys  │              │                          │
-│    driven locally            │              │                          │
+│    driven in-process         │              │                          │
 │                              │── drive ─────▶│  win-rdp-mcp.exe (agent) │
 │  • pushes the agent over the │   redirection │   pushed + run in-session│
 │    redirected drive, talks   │◀── files ────▶│   window tree, shell,    │
@@ -49,10 +51,9 @@ install it — see [Running the agent directly](#running-the-agent-directly).
 
 ## Quickstart
 
-On your Linux machine:
+On your machine (Linux, macOS or Windows):
 
 ```sh
-# with Nix — bundles xfreerdp/xdotool/imagemagick/xvfb, nothing else to install
 nix run github:stubbedev/win-rdp-mcp -- control \
   --target 192.168.1.50 --user administrator
 
@@ -66,17 +67,12 @@ Windows gives a user one session, so another client logging in as the same user
 takes it. The first system-tool call waits a few seconds while the agent
 bootstraps; the desktop tools work immediately.
 
-### Requirements (controller host)
+### Requirements
 
-The controller shells out to `xfreerdp` (FreeRDP 3 — `xfreerdp3` is used when
-present, which is what Debian and Ubuntu call it), `xdotool`, `import`
-(ImageMagick), `Xvfb` and `xdpyinfo`. The Nix package and dev shell bundle them.
-Installing another way, get them from your package manager, e.g. on
-Debian/Ubuntu:
-
-```sh
-sudo apt install freerdp3-x11 xdotool imagemagick xvfb x11-utils
-```
+Nothing beyond the binary. The controller speaks RDP itself (TLS + NLA/CredSSP,
+the bitmap and RemoteFX codecs, and drive redirection), so there is no FreeRDP,
+X server or screenshot tool to install. Drive the controller from Linux, macOS
+or Windows.
 
 The target account must be able to log in over RDP. That's it — no admin share,
 no WinRM, no firewall change.
@@ -156,7 +152,7 @@ extra-trusted-public-keys = default:9P4FePqHV1rGv5NDBun0GN26y83pcaaMr/NHZrxKaac=
 
 ```sh
 go install github.com/stubbedev/win-rdp-mcp@latest
-# then install xfreerdp3 / xdotool / imagemagick / xvfb / xdpyinfo yourself
+GOOS=windows GOARCH=amd64 go build -o win-rdp-mcp.exe github.com/stubbedev/win-rdp-mcp  # the agent to push
 ```
 
 ### npm / npx
@@ -165,30 +161,12 @@ go install github.com/stubbedev/win-rdp-mcp@latest
 npx -y @stubbedev/win-rdp-mcp control --target ... --user ...
 ```
 
-Downloads the prebuilt binary for your platform on first run. You still need the
-runtime tools installed (the npm package doesn't bundle them).
-
-### Docker (macOS and Windows hosts)
-
-The controller only runs on Linux. From macOS or Windows, run it from the
-bundled [Dockerfile](Dockerfile): the image carries FreeRDP 3, Xvfb, xdotool
-and ImageMagick, and the agent to push.
-
-```sh
-docker build -t win-rdp-mcp https://github.com/stubbedev/win-rdp-mcp.git
-claude mcp add win-rdp -s user -- \
-  docker run -i --rm -v ~/.config/win-rdp-mcp/target.pass:/run/secrets/target.pass:ro \
-  win-rdp-mcp control --target 192.168.1.50 --user administrator \
-  --pass-file /run/secrets/target.pass
-```
-
-`-i` keeps stdin open for the stdio transport. The target must be reachable from
-inside the container.
+Downloads the prebuilt binary for your platform on first run.
 
 > Everything builds and tests on Linux, macOS and Windows — that is how CI checks
-> it — but the **controller runs on Linux** (it needs xfreerdp/xdotool; use
-> [Docker](#docker-macos-and-windows-hosts) elsewhere), and the **agent binary is
-> for Windows**.
+> it. The **controller runs anywhere**; the **agent binary is for Windows**, and
+> the controller looks for it as `win-rdp-mcp.exe` next to itself (or pass
+> `--agent-exe`).
 
 ---
 
@@ -243,8 +221,8 @@ When running as a controller, the split below is what has a footprint on the
 target and what does not. When running the agent standalone on the target, every
 tool is served by the agent and the distinction disappears.
 
-**Served locally by the controller** — driven straight over RDP with
-xdotool/import, **no footprint on the target**:
+**Served locally by the controller** — driven straight over RDP by the
+built-in client, **no footprint on the target**:
 `Snapshot`, `Click`, `Type`, `Move`, `Scroll`, `Shortcut`, `Wait`.
 
 > `Snapshot` returns the screenshot on its own; once the agent is up it also
@@ -339,8 +317,7 @@ controller entirely.
 ## Development
 
 ```sh
-nix develop        # Go 1.27, gopls, staticcheck, just, node — plus xfreerdp,
-                   # xdotool, imagemagick, xvfb for running the controller
+nix develop        # Go 1.27, gopls, staticcheck, just, node (for the npm wrapper)
 just               # list every recipe
 ```
 
@@ -359,8 +336,14 @@ just               # list every recipe
 
 | File | Holds |
 |------|-------|
-| `controller_linux.go` | the RDP controller: session, desktop tools, MCP routing |
-| `controller_agent_linux.go` | pushing the agent into the session, the file-RPC client |
+| `controller.go` | the controller: flags, MCP registration and routing |
+| `controller_session.go` | the RDP session: connect/reconnect, framebuffer, disconnect reasons |
+| `controller_input.go` | the desktop tools as RDP keyboard/mouse input |
+| `controller_agent.go` | pushing the agent into the session, the file-RPC client |
+| `keys.go` | the key table shared by the controller (scancodes) and agent (virtual keys) |
+| `sysadmin*.go` | services, scheduled tasks, event log and ping via Win32/COM |
+| `internal/grdp` | the RDP client, vendored from [nakagami/grdp](https://github.com/nakagami/grdp) v0.9.12 (GPL-3.0) with audio and cgo stripped and hooks added for drive redirection and direct input |
+| `internal/rdpdr` | the redirected drive (MS-RDPEFS) that carries the agent and its RPC |
 | `dirserve.go` | the agent's `dir` transport (file request/response) |
 | `tools.json` / `tools.go` | tool schemas + agent registration/dispatch |
 | `desktop.go` / `system.go` | the agent's Win32 and system tools |
@@ -369,8 +352,9 @@ just               # list every recipe
 
 ### CI
 
-- **CI** — gofmt, vet (host + Windows cross), race tests, both builds, `.mcpb`
-  validate, stdio smoke, plus the suite on a real `windows-latest` runner.
+- **CI** — gofmt, vet (host + Windows cross), race tests (including the stdio
+  smoke test), Linux/Windows/macOS builds, `.mcpb` validate, plus the suite on a
+  real `windows-latest` runner.
 - **Flake** — recomputes `vendorHash` on any Go change and commits it, builds
   the flake, runs `nix flake check`, pushes the closure to the cache.
 - **Flake update** — weekly `nix flake update`, committed only if it still builds.
@@ -388,4 +372,5 @@ an error; env vars are `WIN_RDP_MCP_*` and the config file is `win-rdp-mcp.toml`
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-3.0 — see [LICENSE](LICENSE). The vendored RDP client in `internal/grdp` is
+GPL-3.0, which is why the project as a whole is.

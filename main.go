@@ -5,19 +5,19 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
-	"github.com/spf13/pflag"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/spf13/pflag"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -43,10 +43,6 @@ func run(argv []string) error {
 	if len(argv) > 0 {
 		switch argv[0] {
 		case "control":
-			// The controller is the other half of the system: it runs on the
-			// operator's machine, drives the target over RDP, and is the MCP
-			// server the AI connects to. It is Linux-only (it shells out to
-			// xfreerdp/xdotool); controlMain on other platforms says so.
 			return controlMain(argv[1:])
 		case "install":
 			return installScheduledTask()
@@ -477,27 +473,16 @@ func installScheduledTask() error {
 		return err
 	}
 
-	user := os.Getenv("USERNAME")
-	if user == "" {
-		user = os.Getenv("USER")
-	}
-	args := []string{"/Create", "/SC", "ONSTART", "/TN", scheduledTaskName, "/TR", `"` + exe + `"`, "/F"}
-	if user != "" {
-		args = append(args, "/RU", user)
-	}
-
-	out, err := exec.Command("schtasks", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("creating scheduled task: %w: %s", err, strings.TrimSpace(string(out)))
+	if err := createTask(scheduledTaskName, commandLine{Path: exe}, triggerOnStart); err != nil {
+		return fmt.Errorf("creating scheduled task: %w", err)
 	}
 	fmt.Printf("Scheduled task %q created; win-rdp-mcp will start at boot.\n", scheduledTaskName)
 	return nil
 }
 
 func uninstallScheduledTask() error {
-	out, err := exec.Command("schtasks", "/Delete", "/TN", scheduledTaskName, "/F").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("removing scheduled task: %w: %s", err, strings.TrimSpace(string(out)))
+	if err := deleteTask(scheduledTaskName); err != nil {
+		return fmt.Errorf("removing scheduled task: %w", err)
 	}
 	fmt.Printf("Scheduled task %q removed.\n", scheduledTaskName)
 	return nil

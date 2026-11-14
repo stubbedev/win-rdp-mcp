@@ -7,18 +7,21 @@ toolchain go1.27.4
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
+	github.com/go-ole/go-ole v1.3.0
 	github.com/google/jsonschema-go v0.4.3
+	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/spf13/pflag v1.1.0
+	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.47.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/net v0.62.0
+	golang.org/x/sys v0.50.0
 )
 
 require (
 	github.com/JohannesKaufmann/dom v0.3.1 // indirect
 	github.com/ebitengine/purego v0.11.2 // indirect
-	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20260805114148-88456608a4f6 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
@@ -27,7 +30,6 @@ require (
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
