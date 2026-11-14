@@ -220,6 +220,7 @@ func (c *DvcClient) Process(s []byte) {
 		slog.Warn("dvc: unhandled cmd", "cmd", hdr.cmd)
 	}
 }
+
 type channelCloser interface{ OnChannelClosed() }
 
 func (c *DvcClient) processClose(hdr *DvcHeader, s []byte) channelCloser {
