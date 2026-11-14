@@ -16,13 +16,16 @@ import (
 )
 
 const (
-	agentUNCPath      = `\\tsclient\` + driveName
-	agentExeName      = "win-rdp-mcp.exe"
-	agentStartWait    = 30 * time.Second
-	agentReattachWait = 15 * time.Second
-	agentAdoptWait    = 2 * time.Second
-	driveAcceptWait   = 60 * time.Second
-	runDialogSettle   = 1200 * time.Millisecond
+	agentUNCPath        = `\\tsclient\` + driveName
+	agentExeName        = "win-rdp-mcp.exe"
+	agentStartWait      = 30 * time.Second
+	agentReattachWait   = 15 * time.Second
+	agentAdoptWait      = 2 * time.Second
+	driveAcceptWait     = 60 * time.Second
+	runDialogSettle     = 1200 * time.Millisecond
+	runDialogTries      = 3
+	screenCheckWait     = 3 * time.Second
+	screenCheckInterval = 100 * time.Millisecond
 )
 
 var errAgentChannelClosed = errors.New("the in-session agent's channel closed")
@@ -369,7 +372,14 @@ func (p *agentProxy) launch(ctx context.Context, dismissLeftovers bool) error {
 	launch := p.launchCommand()
 	logf("launching the agent in the session: %s", launch)
 	_, err = p.session.withInput(ctx, func(in *desktopInput) (toolResult, error) {
-		return toolResult{}, p.runInSession(ctx, in, launch, dismissLeftovers)
+		var err error
+		for try := range runDialogTries {
+			err = p.runInSession(ctx, in, launch, dismissLeftovers || try > 0)
+			if !errors.Is(err, errRunDialogNotShown) {
+				break
+			}
+		}
+		return toolResult{}, err
 	})
 	if err != nil {
 		return fmt.Errorf("launching the agent through the Run dialog: %w", err)
@@ -377,22 +387,40 @@ func (p *agentProxy) launch(ctx context.Context, dismissLeftovers bool) error {
 	return nil
 }
 
+var (
+	errRunDialogNotShown = errors.New("the Run dialog did not come up in front after Win+R (another window kept focus, or a Run dialog was already open), so nothing was pasted")
+	errPasteMissedRunBox = errors.New("the pasted command did not appear in the Run dialog, so Enter was not pressed")
+)
+
 func (p *agentProxy) runInSession(ctx context.Context, in *desktopInput, command string, dismissLeftovers bool) error {
 	conn := p.session.conn
+	area := runDialogArea(p.session.size.width, p.session.size.height)
 	settle := func() { conn.waitQuiet(ctx, captureQuiet, runDialogSettle, false) }
 	if dismissLeftovers {
+		painted := conn.lastPaint.Load()
 		if err := in.press(keyEsc); err != nil {
 			return err
 		}
+		conn.waitPaintAfter(ctx, painted, runDialogSettle)
 		settle()
 	}
+
+	beforeRun := conn.capture()
 	if err := in.press(keyWin, keyR); err != nil {
 		return err
 	}
+	_, change := awaitScreen(ctx, conn, beforeRun, area, screenChange.dialogAppeared)
+	if !change.dialogAppeared() {
+		return fmt.Errorf("%w [%s]", errRunDialogNotShown, change)
+	}
 	settle()
+	beforePaste := conn.capture()
 
 	if err := in.paste(ctx, command); err != nil {
 		return err
+	}
+	if _, change := awaitScreen(ctx, conn, beforePaste, area, screenChange.landedInside); !change.landedInside() {
+		return fmt.Errorf("%w [%s]", errPasteMissedRunBox, change)
 	}
 	settle()
 	if err := in.press(keyDel); err != nil {
@@ -442,6 +470,17 @@ func (p *agentProxy) transfer(ctx context.Context, tool string, args arguments) 
 		return toolResult{}, fmt.Errorf("writing %s: %w", local, err)
 	}
 	return textResult("Downloaded %s from %s to %s", humanBytes(n), target, local), nil
+}
+
+func awaitScreen(ctx context.Context, conn *rdpConn, before *image.RGBA, area image.Rectangle, done func(screenChange) bool) (*image.RGBA, screenChange) {
+	deadline := time.Now().Add(screenCheckWait)
+	for {
+		now := conn.capture()
+		change := diffScreens(before, now, area)
+		if done(change) || time.Now().After(deadline) || !sleepCtx(ctx, screenCheckInterval) {
+			return now, change
+		}
+	}
 }
 
 func (p *agentProxy) call(ctx context.Context, name string, args map[string]any) (toolResult, error) {

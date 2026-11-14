@@ -342,6 +342,7 @@ just               # list every recipe
 | `just run` / `just run-http` | run the agent over stdio / on loopback |
 | `just tools` | list the tools for a given set of flags |
 | `just smoke` | drive the agent over stdio and assert `tools/list` |
+| `just e2e` | full end-to-end run against a real Windows machine (set `WIN_RDP_E2E_TARGET`, `_USER`, `_PASS_FILE`; a [dockur/windows](https://github.com/dockur/windows) VM works) |
 | `just bundle` | pack and validate the `.mcpb` |
 | `just nix-build` / `just nix-check` / `just nix-vendor-hash` | flake build / check / refresh vendorHash |
 | `just release-patch` / `-minor` / `-major` | cut a release |
