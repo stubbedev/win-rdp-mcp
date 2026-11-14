@@ -2,10 +2,13 @@ package drdynvc
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp/core"
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp/plugin"
@@ -57,6 +60,7 @@ type dvcReassembly struct {
 }
 
 type DvcClient struct {
+	mu                sync.Mutex
 	w                 core.ChannelSender
 	channels          map[string]ChannelClient
 	handlers          map[string]DvcChannelHandler // channelName → handler
@@ -78,6 +82,8 @@ func NewDvcClient() *DvcClient {
 
 // RegisterHandler registers a handler for a named DVC channel.
 func (c *DvcClient) RegisterHandler(name string, handler DvcChannelHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.handlers[name] = handler
 }
 
@@ -87,6 +93,8 @@ func (c *DvcClient) RegisterHandler(name string, handler DvcChannelHandler) {
 // rejecting AUDIO_PLAYBACK_LOSSY_DVC forces gnome-remote-desktop to
 // fall back to lossless AUDIO_PLAYBACK_DVC (PCM).
 func (c *DvcClient) RegisterRejectedChannel(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.rejectedChannels[name] = true
 }
 
@@ -128,17 +136,39 @@ func (c *DvcClient) Send(s []byte) (int, error) {
 	return c.w.SendToChannel(name, s)
 }
 
-// SendDvcData sends data on a DVC channel wrapped in a DYNVC_DATA PDU.
-func (c *DvcClient) SendDvcData(channelId uint32, data []byte) {
+const dvcMaxPDU = plugin.CHANNEL_CHUNK_LENGTH
+
+// SendDvcData sends data on a DVC channel, splitting it into a
+// DYNVC_DATA_FIRST followed by DYNVC_DATA PDUs when it does not fit one PDU
+// (MS-RDPEDYC 3.1.5.1.4).
+func (c *DvcClient) SendDvcData(channelId uint32, data []byte) error {
+	c.mu.Lock()
 	ch, ok := c.channelById[channelId]
+	c.mu.Unlock()
 	if !ok {
-		return
+		return fmt.Errorf("dvc: channel %d is not open", channelId)
 	}
-	hdr := &DvcHeader{cmd: DYNVC_DATA, sp: 0, cbChId: ch.cbChId}
-	b := &bytes.Buffer{}
-	b.Write(hdr.serialize(channelId))
-	b.Write(data)
-	c.Send(b.Bytes())
+	single := &DvcHeader{cmd: DYNVC_DATA, sp: 0, cbChId: ch.cbChId}
+	head := single.serialize(channelId)
+	if len(head)+len(data) <= dvcMaxPDU {
+		_, err := c.Send(append(head, data...))
+		return err
+	}
+	first := &DvcHeader{cmd: DYNVC_DATA_FIRST, sp: 2, cbChId: ch.cbChId}
+	pdu := first.serialize(channelId)
+	pdu = binary.LittleEndian.AppendUint32(pdu, uint32(len(data)))
+	n := dvcMaxPDU - len(pdu)
+	if _, err := c.Send(append(pdu, data[:n]...)); err != nil {
+		return err
+	}
+	for rest := data[n:]; len(rest) > 0; {
+		n = min(len(rest), dvcMaxPDU-len(head))
+		if _, err := c.Send(append(bytes.Clone(head), rest[:n]...)); err != nil {
+			return err
+		}
+		rest = rest[n:]
+	}
+	return nil
 }
 func (c *DvcClient) Sender(f core.ChannelSender) {
 	c.w = f
@@ -158,18 +188,31 @@ func (c *DvcClient) Process(s []byte) {
 	b, _ := core.ReadBytes(r.Len(), r)
 
 	switch hdr.cmd {
+	case DYNVC_DATA_FIRST, DYNVC_DATA:
+		handler, payload := c.reassemble(hdr, b)
+		if handler != nil {
+			handler.Process(payload)
+		}
+		return
+	case DYNVC_CLOSE:
+		if closed := c.processClose(hdr, b); closed != nil {
+			closed.OnChannelClosed()
+		}
+		return
+	case DYNVC_CREATE_REQ:
+		slog.Debug("DYNVC_CREATE_REQ")
+		if created := c.processCreateReq(hdr, b); created != nil {
+			created.OnChannelCreated()
+		}
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch hdr.cmd {
 	case DYNVC_CAPABILITIES:
 		slog.Debug("DYNVC_CAPABILITIES")
 		c.processCapsPdu(hdr, b)
-	case DYNVC_CREATE_REQ:
-		slog.Debug("DYNVC_CREATE_REQ")
-		c.processCreateReq(hdr, b)
-	case DYNVC_DATA_FIRST:
-		c.processDataFirst(hdr, b)
-	case DYNVC_DATA:
-		c.processData(hdr, b)
-	case DYNVC_CLOSE:
-		c.processClose(hdr, b)
 	case DYNVC_SOFT_SYNC_REQUEST:
 		slog.Debug("DYNVC_SOFT_SYNC_REQUEST")
 		c.processSoftSyncRequest(hdr, b)
@@ -177,20 +220,30 @@ func (c *DvcClient) Process(s []byte) {
 		slog.Warn("dvc: unhandled cmd", "cmd", hdr.cmd)
 	}
 }
-func (c *DvcClient) processClose(hdr *DvcHeader, s []byte) {
+type channelCloser interface{ OnChannelClosed() }
+
+func (c *DvcClient) processClose(hdr *DvcHeader, s []byte) channelCloser {
 	r := bytes.NewReader(s)
 	channelId := readDvcId(r, hdr.cbChId)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	ch, ok := c.channelById[channelId]
-	name := "(unknown)"
-	if ok {
-		name = ch.name
-		delete(c.channelById, channelId)
-		delete(c.reassembly, channelId)
+	if !ok {
+		slog.Debug("dvc: CLOSE", "channelId", channelId, "name", "(unknown)")
+		return nil
 	}
-	slog.Debug("dvc: CLOSE", "channelId", channelId, "name", name)
+	delete(c.channelById, channelId)
+	delete(c.reassembly, channelId)
+	slog.Debug("dvc: CLOSE", "channelId", channelId, "name", ch.name)
+	closer, _ := ch.handler.(channelCloser)
+	return closer
 }
 
-func (c *DvcClient) processCreateReq(hdr *DvcHeader, s []byte) {
+type channelCreator interface{ OnChannelCreated() }
+
+func (c *DvcClient) processCreateReq(hdr *DvcHeader, s []byte) channelCreator {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	r := bytes.NewReader(s)
 	channelId := readDvcId(r, hdr.cbChId)
 	nameBytes, _ := core.ReadBytes(r.Len(), r)
@@ -213,7 +266,9 @@ func (c *DvcClient) processCreateReq(hdr *DvcHeader, s []byte) {
 		if setter, ok := handler.(interface{ SetSendFunc(func([]byte)) }); ok {
 			chId := channelId
 			setter.SetSendFunc(func(data []byte) {
-				c.SendDvcData(chId, data)
+				if err := c.SendDvcData(chId, data); err != nil {
+					slog.Warn("dvc: send failed", "channel", channelName, "err", err)
+				}
 			})
 		}
 		slog.Debug("dvc: handler registered", "channel", channelName, "id", channelId)
@@ -228,7 +283,7 @@ func (c *DvcClient) processCreateReq(hdr *DvcHeader, s []byte) {
 		b.Write(rspHdr.serialize(channelId))
 		core.WriteUInt32LE(0x80004005, b) // E_FAIL
 		c.Send(b.Bytes())
-		return
+		return nil
 	}
 
 	// Send success response (Sp SHOULD be 0 per MS-RDPEDYC 2.2.2.2).
@@ -241,12 +296,8 @@ func (c *DvcClient) processCreateReq(hdr *DvcHeader, s []byte) {
 	core.WriteUInt32LE(0, b)
 	c.Send(b.Bytes())
 
-	// Notify handler that channel is ready (CREATE_RSP has been sent)
-	if handler != nil {
-		if ch, ok := handler.(interface{ OnChannelCreated() }); ok {
-			ch.OnChannelCreated()
-		}
-	}
+	creator, _ := handler.(channelCreator)
+	return creator
 }
 
 func readDvcId(r io.Reader, cbLen uint8) (id uint32) {
@@ -262,68 +313,49 @@ func readDvcId(r io.Reader, cbLen uint8) (id uint32) {
 	}
 	return
 }
-func (c *DvcClient) processDataFirst(hdr *DvcHeader, s []byte) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("dvc: panic in processDataFirst", "err", r)
-		}
-	}()
+func (c *DvcClient) reassemble(hdr *DvcHeader, s []byte) (DvcChannelHandler, []byte) {
 	r := bytes.NewReader(s)
 	channelId := readDvcId(r, hdr.cbChId)
-
-	// Read total length (encoding based on sp/Len field)
 	var totalLen uint32
-	switch hdr.sp {
-	case 0:
-		l, _ := core.ReadUInt8(r)
-		totalLen = uint32(l)
-	case 1:
-		l, _ := core.ReadUint16LE(r)
-		totalLen = uint32(l)
-	default:
-		totalLen, _ = core.ReadUInt32LE(r)
+	if hdr.cmd == DYNVC_DATA_FIRST {
+		switch hdr.sp {
+		case 0:
+			l, _ := core.ReadUInt8(r)
+			totalLen = uint32(l)
+		case 1:
+			l, _ := core.ReadUint16LE(r)
+			totalLen = uint32(l)
+		default:
+			totalLen, _ = core.ReadUInt32LE(r)
+		}
 	}
-
 	data, _ := core.ReadBytes(r.Len(), r)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	ch, ok := c.channelById[channelId]
 	if !ok || ch.handler == nil {
-		return
+		return nil, nil
 	}
-
-	if uint32(len(data)) >= totalLen {
-		ch.handler.Process(data[:totalLen])
-	} else {
+	if hdr.cmd == DYNVC_DATA_FIRST {
+		if uint32(len(data)) >= totalLen {
+			return ch.handler, data[:totalLen]
+		}
 		ra := &dvcReassembly{totalLen: totalLen}
 		ra.buf.Write(data)
 		c.reassembly[channelId] = ra
+		return nil, nil
 	}
-}
-
-func (c *DvcClient) processData(hdr *DvcHeader, s []byte) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("dvc: panic in processData", "err", r)
-		}
-	}()
-	r := bytes.NewReader(s)
-	channelId := readDvcId(r, hdr.cbChId)
-	data, _ := core.ReadBytes(r.Len(), r)
-
-	ch, ok := c.channelById[channelId]
-	if !ok || ch.handler == nil {
-		return
+	ra, ok := c.reassembly[channelId]
+	if !ok {
+		return ch.handler, data
 	}
-
-	ra, hasReassembly := c.reassembly[channelId]
-	if hasReassembly {
-		ra.buf.Write(data)
-		if uint32(ra.buf.Len()) >= ra.totalLen {
-			ch.handler.Process(ra.buf.Bytes()[:ra.totalLen])
-			delete(c.reassembly, channelId)
-		}
-	} else {
-		ch.handler.Process(data)
+	ra.buf.Write(data)
+	if uint32(ra.buf.Len()) < ra.totalLen {
+		return nil, nil
 	}
+	delete(c.reassembly, channelId)
+	return ch.handler, ra.buf.Bytes()[:ra.totalLen]
 }
 
 func (c *DvcClient) processCapsPdu(hdr *DvcHeader, s []byte) {

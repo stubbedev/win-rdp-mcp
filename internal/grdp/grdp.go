@@ -134,7 +134,16 @@ type RdpClient struct {
 	dialer func(hostPort string) (net.Conn, error)
 
 	deviceRedirection plugin.ChannelTransport
+	dynamicChannels   map[string]drdynvc.DvcChannelHandler
 	lastErrorInfo     atomic.Uint32
+}
+
+func (g *RdpClient) RegisterDynamicChannel(name string, handler drdynvc.DvcChannelHandler) *RdpClient {
+	if g.dynamicChannels == nil {
+		g.dynamicChannels = map[string]drdynvc.DvcChannelHandler{}
+	}
+	g.dynamicChannels[name] = handler
+	return g
 }
 
 var ErrNotReady = errors.New("RDP session is not ready for input")
@@ -529,6 +538,9 @@ func (g *RdpClient) doLogin(routingToken []byte) error {
 	// drdynvc (Dynamic Virtual Channels)
 	dvcClient := drdynvc.NewDvcClient()
 	g.channels.Register(dvcClient)
+	for name, handler := range g.dynamicChannels {
+		dvcClient.RegisterHandler(name, handler)
+	}
 	g.mcs.SetClientDynvcProtocol()
 
 	// RDPGFX (Graphics Pipeline) handler
