@@ -74,6 +74,28 @@ var characterKeys = func() map[rune]keyDef {
 	return m
 }()
 
+var shiftedCharacters = map[rune]rune{
+	'!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8',
+	'(': '9', ')': '0', '_': '-', '+': '=', '{': '[', '}': ']', '|': '\\', ':': ';',
+	'"': '\'', '<': ',', '>': '.', '?': '/', '~': '`',
+}
+
+func typingKey(r rune) (key keyDef, shift, ok bool) {
+	if r == ' ' {
+		return namedKeys["space"], false, true
+	}
+	if def, ok := characterKeys[r]; ok {
+		return def, false, true
+	}
+	if r >= 'A' && r <= 'Z' {
+		return characterKeys[r-'A'+'a'], true, true
+	}
+	if base, ok := shiftedCharacters[r]; ok {
+		return characterKeys[base], true, true
+	}
+	return keyDef{}, false, false
+}
+
 var functionKeyScancodes = [24]uint8{
 	0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58,
 	0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x76,

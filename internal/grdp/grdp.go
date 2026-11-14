@@ -187,6 +187,10 @@ func (g *RdpClient) Unicode(unit uint16, release bool) error {
 	return g.sendInput(pdu.INPUT_EVENT_UNICODE, p)
 }
 
+func (g *RdpClient) Synchronize(toggles uint32) error {
+	return g.sendInput(pdu.INPUT_EVENT_SYNC, &pdu.SynchronizeEvent{ToggleFlags: toggles})
+}
+
 func (g *RdpClient) Pointer(flags uint16, x, y int) error {
 	return g.sendInput(pdu.INPUT_EVENT_MOUSE, &pdu.PointerEvent{PointerFlags: flags, XPos: uint16(x), YPos: uint16(y)})
 }

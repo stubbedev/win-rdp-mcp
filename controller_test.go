@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"slices"
 	"strings"
@@ -43,6 +44,10 @@ func (r *recordingSink) Unicode(u uint16, release bool) error {
 
 func (r *recordingSink) Pointer(flags uint16, x, y int) error {
 	return r.record(inputEvent{kind: "pointer", code: flags, x: x, y: y})
+}
+
+func (r *recordingSink) Synchronize(toggles uint32) error {
+	return r.record(inputEvent{kind: "sync", code: uint16(toggles)})
 }
 
 func newTestInput() (*desktopInput, *recordingSink) {
@@ -131,7 +136,7 @@ func TestExtendedKeysCarryTheFlag(t *testing.T) {
 }
 
 func TestTypingStrokes(t *testing.T) {
-	strokes := typingStrokes("a\r\nb\tc😀")
+	strokes := typingStrokes("aA!\r\nb\té😀")
 	var got []string
 	for _, s := range strokes {
 		switch {
@@ -139,25 +144,36 @@ func TestTypingStrokes(t *testing.T) {
 			got = append(got, "ENTER")
 		case s.isKey && s.key == keyTab:
 			got = append(got, "TAB")
+		case s.isKey && s.shift:
+			got = append(got, fmt.Sprintf("shift+%#x", s.key.scan))
+		case s.isKey:
+			got = append(got, fmt.Sprintf("%#x", s.key.scan))
 		default:
-			got = append(got, string(rune(s.unit)))
+			got = append(got, fmt.Sprintf("u+%04x", s.unit))
 		}
 	}
-	want := []string{"a", "ENTER", "b", "TAB", "c", "\ufffd", "\ufffd"}
+	want := []string{"0x1e", "shift+0x1e", "shift+0x2", "ENTER", "0x30", "TAB", "u+00e9", "u+d83d", "u+de00"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("strokes = %q, want %q", got, want)
 	}
-	if u := strokes[len(strokes)-2].unit; u != 0xD83D {
-		t.Fatalf("emoji high surrogate = 0x%04x, want 0xD83D", u)
+}
+
+func TestEveryPrintableASCIICharacterHasAKey(t *testing.T) {
+	for r := rune(0x20); r < 0x7F; r++ {
+		if _, _, ok := typingKey(r); !ok {
+			t.Errorf("%q has no US-layout key", r)
+		}
 	}
 }
 
-func TestTypeStringSendsDownAndUp(t *testing.T) {
+func TestTypeStringSynchronizesThenSendsKeys(t *testing.T) {
 	in, sink := newTestInput()
-	if err := in.typeString("é\n"); err != nil {
+	if err := in.typeString("Hé\n"); err != nil {
 		t.Fatal(err)
 	}
 	want := []inputEvent{
+		{kind: "sync", code: syncNumLockOnly},
+		{kind: "key", code: 0x2A}, {kind: "key", code: 0x23}, {kind: "key", code: 0x23, release: true}, {kind: "key", code: 0x2A, release: true},
 		{kind: "unicode", code: 'é'}, {kind: "unicode", code: 'é', release: true},
 		{kind: "key", code: 0x1C}, {kind: "key", code: 0x1C, release: true},
 	}

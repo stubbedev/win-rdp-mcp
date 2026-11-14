@@ -16,7 +16,10 @@ type inputSink interface {
 	Key(scancode uint8, extended, release bool) error
 	Unicode(unit uint16, release bool) error
 	Pointer(flags uint16, x, y int) error
+	Synchronize(toggles uint32) error
 }
+
+const syncNumLockOnly = 0x2
 
 type clipboardOffer interface {
 	offerClipboard(ctx context.Context, text string) error
@@ -120,6 +123,7 @@ func (in *desktopInput) press(keys ...keyDef) error {
 type keystroke struct {
 	key   keyDef
 	isKey bool
+	shift bool
 	unit  uint16
 }
 
@@ -129,19 +133,33 @@ func typingStrokes(text string) []keystroke {
 		switch r {
 		case '\n', '\r':
 			strokes = append(strokes, keystroke{key: keyEnter, isKey: true})
+			continue
 		case '\t':
 			strokes = append(strokes, keystroke{key: keyTab, isKey: true})
-		default:
-			for _, u := range utf16.AppendRune(nil, r) {
-				strokes = append(strokes, keystroke{unit: u})
-			}
+			continue
+		}
+		if key, shift, ok := typingKey(r); ok {
+			strokes = append(strokes, keystroke{key: key, isKey: true, shift: shift})
+			continue
+		}
+		for _, u := range utf16.AppendRune(nil, r) {
+			strokes = append(strokes, keystroke{unit: u})
 		}
 	}
 	return strokes
 }
 
 func (in *desktopInput) typeString(text string) error {
+	if err := in.sink.Synchronize(syncNumLockOnly); err != nil {
+		return err
+	}
 	for _, s := range typingStrokes(text) {
+		if s.isKey && s.shift {
+			if err := in.press(keyShift, s.key); err != nil {
+				return err
+			}
+			continue
+		}
 		if s.isKey {
 			if err := in.press(s.key); err != nil {
 				return err

@@ -1829,6 +1829,12 @@ type SynchronizeEvent struct {
 	ToggleFlags uint32 `struc:"little"`
 }
 
+// FastPathEncode appends this synchronize event in the Fast-Path Input wire
+// format (MS-RDPBCGR §2.2.8.1.2.2.4): the toggle flags ride in eventFlags.
+func (p *SynchronizeEvent) FastPathEncode(buf []byte) []byte {
+	return append(buf, byte(FASTPATH_INPUT_EVENT_SYNC<<5)|byte(p.ToggleFlags&0x1F))
+}
+
 func (p *SynchronizeEvent) Serialize() []byte {
 	return []byte{
 		byte(p.Pad2Octets), byte(p.Pad2Octets >> 8),
