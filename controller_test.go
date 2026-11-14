@@ -187,7 +187,7 @@ func TestTypeStringSynchronizesThenSendsKeys(t *testing.T) {
 
 func TestClickMovesThenPressesTheButton(t *testing.T) {
 	in, sink := newTestInput()
-	res, err := in.click(context.Background(), arguments{"x": 10.0, "y": 20.0, "button": "right", "action": "double"})
+	res, err := in.click(image.Pt(10, 20), arguments{"button": "right", "action": "double"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestClickMovesThenPressesTheButton(t *testing.T) {
 
 func TestClickRejectsPointsOutsideTheSession(t *testing.T) {
 	in, sink := newTestInput()
-	if _, err := in.click(context.Background(), arguments{"x": 1280.0, "y": 5.0}); err == nil {
+	if _, err := in.click(image.Pt(1280, 5), arguments{}); err == nil {
 		t.Fatal("click outside the session was accepted")
 	}
 	if len(sink.events) != 0 {

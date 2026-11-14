@@ -28,16 +28,17 @@
   },
   {
     "name": "Click",
-    "description": "Mouse click at screen coordinates.",
+    "description": "Mouse click at screen coordinates, or on an element number from the latest Snapshot.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "x": { "type": "integer", "description": "X coordinate." },
         "y": { "type": "integer", "description": "Y coordinate." },
+        "element": { "type": "integer", "minimum": 1, "description": "Element number from the latest Snapshot or AnnotatedSnapshot; clicks its center instead of x/y." },
         "button": { "type": "string", "enum": ["left", "right", "middle"], "default": "left" },
         "action": { "type": "string", "enum": ["click", "double", "hover"], "default": "click" }
       },
-      "required": ["x", "y"],
+      
       "additionalProperties": false
     }
   },

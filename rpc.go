@@ -34,6 +34,7 @@ const (
 	rpcBye       rpcKind = "bye"
 
 	rpcRestoreClipboard rpcKind = "restoreClipboard"
+	rpcElement          rpcKind = "element"
 )
 
 type rpcMessage struct {
@@ -47,6 +48,9 @@ type rpcMessage struct {
 	Content   []contentBlock `json:"content,omitzero"`
 	IsError   bool           `json:"isError,omitzero"`
 	Text      string         `json:"text,omitzero"`
+	Index     int            `json:"index,omitzero"`
+	X         int            `json:"x,omitzero"`
+	Y         int            `json:"y,omitzero"`
 }
 
 var errAgentRetired = errors.New("the controller retired this agent")
@@ -190,6 +194,15 @@ func serveRPC(ctx context.Context, conn io.ReadWriter, build string, resolved ma
 			case rpcCall:
 				tools := *enabled.Load()
 				calls.Go(func() { out.answer(runRPCTool(ctx, msg, tools, resolved), msg.Name) })
+			case rpcElement:
+				result := rpcMessage{Kind: rpcResult, ID: msg.ID}
+				if at, err := elementCenter(msg.Index); err != nil {
+					result.IsError = true
+					result.Content = []contentBlock{{Type: "text", Text: err.Error()}}
+				} else {
+					result.X, result.Y = at.X, at.Y
+				}
+				out.answer(result, "element lookup")
 			case rpcRestoreClipboard:
 				calls.Go(func() {
 					result := rpcMessage{Kind: rpcResult, ID: msg.ID}

@@ -239,8 +239,8 @@ func wheelFlags(notches int, horizontal bool) []uint16 {
 	return out
 }
 
-func (in *desktopInput) click(ctx context.Context, args arguments) (toolResult, error) {
-	x, y := args.intOr("x", 0), args.intOr("y", 0)
+func (in *desktopInput) click(at image.Point, args arguments) (toolResult, error) {
+	x, y := at.X, at.Y
 	name := args.stringOr("button", "left")
 	b, err := parsePointerButton(name)
 	if err != nil {

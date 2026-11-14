@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"log/slog"
 	"os"
@@ -231,6 +232,17 @@ func (c *agentConn) call(ctx context.Context, name string, args map[string]any) 
 		return toolResult{}, err
 	}
 	return toolResult{Content: res.Content, IsError: res.IsError}, nil
+}
+
+func (c *agentConn) elementCenter(ctx context.Context, index int) (image.Point, error) {
+	res, err := c.request(ctx, rpcMessage{Kind: rpcElement, Index: index}, "the element lookup")
+	if err != nil {
+		return image.Point{}, err
+	}
+	if res.IsError {
+		return image.Point{}, errors.New(firstText(res.Content))
+	}
+	return image.Pt(res.X, res.Y), nil
 }
 
 func (c *agentConn) restoreClipboard(ctx context.Context, text string) error {

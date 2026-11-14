@@ -33,7 +33,7 @@ func (e uiElement) center() (int, int) {
 // control has no caption of its own.
 func (e uiElement) label() string {
 	if e.Text != "" {
-		return e.Text
+		return e.Class + " \"" + e.Text + "\""
 	}
 	return e.Class
 }

@@ -238,8 +238,10 @@ built-in client, **no footprint on the target**:
 `ReconnectSession` (which re-establishes the RDP connection).
 
 > `Snapshot` returns the screenshot on its own; once the agent is up it also
-> carries the window and control list (with coordinates), so a model can aim
-> clicks by element rather than by guessing pixels.
+> carries the window list and the foreground window's controls, read through
+> UI Automation (named buttons, fields, menu items, list items). `Click` takes
+> `element=N` from that list, so a model can aim by control rather than by
+> guessing pixels.
 
 **Served by the in-session agent** — everything else, including the desktop
 tools that need Win32 (window management, OCR, recording, the annotated view):

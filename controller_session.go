@@ -413,6 +413,19 @@ func (s *rdpSession) snapshot(ctx context.Context, args arguments, proxy *agentP
 		return toolResult{}, err
 	}
 
+	type listing struct {
+		text string
+		err  error
+	}
+	var elements chan listing
+	if proxy != nil && proxy.ready() {
+		elements = make(chan listing, 1)
+		go func() {
+			r, err := proxy.call(ctx, "Snapshot", map[string]any{"use_vision": false})
+			elements <- listing{firstText(r.Content), err}
+		}()
+	}
+
 	var blocks []contentBlock
 	if args.boolOr("use_vision", true) {
 		data, err := jpegBytes(img, args.intOr("quality", 75), args.intOr("max_width", 0))
@@ -424,12 +437,12 @@ func (s *rdpSession) snapshot(ctx context.Context, args arguments, proxy *agentP
 
 	text := fmt.Sprintf("Remote desktop %dx%d (via RDP).", s.size.width, s.size.height)
 	switch {
-	case proxy != nil && proxy.ready():
-		r, err := proxy.call(ctx, "Snapshot", map[string]any{"use_vision": false})
-		if err != nil {
-			text += " (window/element list unavailable: " + err.Error() + ")"
-		} else if t := firstText(r.Content); t != "" {
-			text = t
+	case elements != nil:
+		got := <-elements
+		if got.err != nil {
+			text += " (window/element list unavailable: " + got.err.Error() + ")"
+		} else if got.text != "" {
+			text = got.text
 		}
 	case proxy != nil:
 		text += " (window/element list appears once the in-session agent finishes starting.)"

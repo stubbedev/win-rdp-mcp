@@ -29,11 +29,9 @@ var (
 	procEnumDisplayMonitors       = user32.NewProc("EnumDisplayMonitors")
 	procGetMonitorInfoW           = user32.NewProc("GetMonitorInfoW")
 	procEnumWindows               = user32.NewProc("EnumWindows")
-	procEnumChildWindows          = user32.NewProc("EnumChildWindows")
 	procIsWindowVisible           = user32.NewProc("IsWindowVisible")
 	procGetWindowTextW            = user32.NewProc("GetWindowTextW")
 	procGetWindowTextLengthW      = user32.NewProc("GetWindowTextLengthW")
-	procGetClassNameW             = user32.NewProc("GetClassNameW")
 	procGetWindowRect             = user32.NewProc("GetWindowRect")
 	procGetWindowThreadProcessId  = user32.NewProc("GetWindowThreadProcessId")
 	procGetForegroundWindow       = user32.NewProc("GetForegroundWindow")
@@ -270,12 +268,6 @@ func windowText(hwnd uintptr) string {
 	return windows.UTF16ToString(buf[:got])
 }
 
-func windowClass(hwnd uintptr) string {
-	buf := make([]uint16, 256)
-	got, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-	return windows.UTF16ToString(buf[:got])
-}
-
 func windowRect(hwnd uintptr) (image.Rectangle, bool) {
 	var r rect
 	ok, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
@@ -320,25 +312,7 @@ func interactiveElements() ([]uiElement, error) {
 	if fg == 0 {
 		return nil, nil
 	}
-	var out []uiElement
-	cb := syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
-		if !isVisible(hwnd) {
-			return 1
-		}
-		r, ok := windowRect(hwnd)
-		if !ok {
-			return 1
-		}
-		out = append(out, uiElement{
-			Index: len(out) + 1,
-			Class: windowClass(hwnd),
-			Text:  windowText(hwnd),
-			Rect:  r,
-		})
-		return 1
-	})
-	procEnumChildWindows.Call(fg, cb, 0)
-	return out, nil
+	return automationElements(fg)
 }
 
 func focusWindow(title string, handle int64) (string, error) {

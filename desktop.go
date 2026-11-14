@@ -53,9 +53,15 @@ func snapshotTool(ctx context.Context, args arguments) (toolResult, error) {
 
 	// Element enumeration is best-effort: a foreground window that refuses to
 	// enumerate should not cost the caller the screenshot and window list.
-	if elements, err := interactiveElements(); err == nil && len(elements) > 0 {
-		b.WriteString("\n**Interactive elements (foreground window):**\n")
-		for _, el := range elements[:min(len(elements), maxListedElements)] {
+	elements, err := interactiveElements()
+	switch {
+	case err != nil:
+		fmt.Fprintf(&b, "\n(interactive elements unavailable: %v)\n", err)
+	case len(elements) > 0:
+		elements = elements[:min(len(elements), maxListedElements)]
+		rememberElements(elements)
+		b.WriteString("\n**Interactive elements (foreground window; Click takes element=N):**\n")
+		for _, el := range elements {
 			cx, cy := el.center()
 			fmt.Fprintf(&b, "  [%d] %s — center (%d,%d)\n", el.Index, el.label(), cx, cy)
 		}
@@ -89,6 +95,7 @@ func annotatedSnapshotTool(ctx context.Context, args arguments) (toolResult, err
 		return imageResult(data, "image/jpeg", "No interactive elements found."), nil
 	}
 	elements = elements[:min(len(elements), maxElements)]
+	rememberElements(elements)
 
 	// Boxes are drawn after scaling, so they stay aligned when max_width shrinks
 	// the image.
@@ -146,8 +153,11 @@ func captureWithReconnect(ctx context.Context, monitor int) (*image.RGBA, image.
 // ── Input ────────────────────────────────────────────────────────────────────
 
 func clickTool(_ context.Context, args arguments) (toolResult, error) {
-	msg, err := mouseClick(args.intOr("x", 0), args.intOr("y", 0),
-		args.stringOr("button", "left"), args.stringOr("action", "click"))
+	at, err := clickTarget(args, elementCenter)
+	if err != nil {
+		return toolResult{}, err
+	}
+	msg, err := mouseClick(at.X, at.Y, args.stringOr("button", "left"), args.stringOr("action", "click"))
 	if err != nil {
 		return toolResult{}, err
 	}

@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"image"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -242,11 +243,24 @@ func localDesktop(ctx context.Context, name string, sess *rdpSession, proxy *age
 		return waitTool(ctx, args)
 	case "ReconnectSession":
 		return sess.reconnect(ctx, args.boolOr("force", false))
+	case "Click":
+		at, err := clickTarget(args, func(index int) (image.Point, error) {
+			if proxy == nil {
+				return image.Point{}, errors.New("clicking an element needs the in-session agent, which is disabled (--no-agent); use x and y")
+			}
+			conn, err := proxy.connection(ctx)
+			if err != nil {
+				return image.Point{}, err
+			}
+			return conn.elementCenter(ctx, index)
+		})
+		if err != nil {
+			return toolResult{}, err
+		}
+		return sess.withInput(ctx, func(in *desktopInput) (toolResult, error) { return in.click(at, args) })
 	}
 	return sess.withInput(ctx, func(in *desktopInput) (toolResult, error) {
 		switch name {
-		case "Click":
-			return in.click(ctx, args)
 		case "Type":
 			return in.typeText(ctx, args)
 		case "Move":
