@@ -8,12 +8,12 @@ import (
 )
 
 const (
-	agentRetryInterval  = time.Second
+	agentRetryInterval  = 500 * time.Millisecond
 	agentOrphanTimeout  = 30 * time.Minute
 	agentReconnectPause = 500 * time.Millisecond
 )
 
-func runAgentChannel(ctx context.Context, token string, enabled map[string]bool) error {
+func runAgentChannel(ctx context.Context, build string) error {
 	resolved, err := resolveSchemas()
 	if err != nil {
 		return err
@@ -37,7 +37,7 @@ func runAgentChannel(ctx context.Context, token string, enabled map[string]bool)
 		}
 		logf("connected to the controller over the %s channel", agentChannelName)
 		lastErr = ""
-		err = serveRPC(ctx, ch, token, enabled, resolved)
+		err = serveRPC(ctx, ch, build, resolved)
 		closeErr := ch.Close()
 		switch {
 		case errors.Is(err, errAgentRetired):

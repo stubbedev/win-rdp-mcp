@@ -155,12 +155,14 @@ func relocateAgent(args []string) (bool, error) {
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		return false, fmt.Errorf("creating %s: %w", home, err)
 	}
-	token := flagValue(args, "--token")
-	dst := filepath.Join(home, "agent-"+token+".exe")
-	if err := copyFile(self, dst); err != nil {
-		return false, fmt.Errorf("copying the agent to %s: %w", dst, err)
+	build := flagValue(args, "--build")
+	dst := filepath.Join(home, "agent-"+build+".exe")
+	if fi, err := os.Stat(dst); err != nil || fi.Size() == 0 {
+		if err := copyFile(self, dst); err != nil {
+			return false, fmt.Errorf("copying the agent to %s: %w", dst, err)
+		}
 	}
-	logPath := filepath.Join(home, "agent-"+token+".log")
+	logPath := filepath.Join(home, "agent-"+build+".log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return false, fmt.Errorf("opening %s: %w", logPath, err)

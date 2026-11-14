@@ -72,20 +72,20 @@ type agentHarness struct {
 	readerDone chan struct{}
 }
 
-func startAgent(t *testing.T, linkToken, agentToken string, enabled map[string]bool) *agentHarness {
+func startAgent(t *testing.T, linkBuild, agentBuild string, enabled map[string]bool) *agentHarness {
 	t.Helper()
 	resolved, err := resolveSchemas()
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := &agentHarness{
-		link: newAgentLink(linkToken), toAgent: newPipeEnd(), toCtl: newPipeEnd(),
+		link: newAgentLink(linkBuild, toolNames(enabled)), toAgent: newPipeEnd(), toCtl: newPipeEnd(),
 		agentDone: make(chan error, 1), readerDone: make(chan struct{}),
 	}
 	h.conn = h.link.NewChannelHandler().(*agentConn)
 	h.conn.SetSendFunc(func(f []byte) { h.toAgent.Write(f) })
 	go func() {
-		h.agentDone <- serveRPC(context.Background(), duplex{r: h.toAgent, w: h.toCtl}, agentToken, enabled, resolved)
+		h.agentDone <- serveRPC(context.Background(), duplex{r: h.toAgent, w: h.toCtl}, agentBuild, resolved)
 		h.toCtl.Close()
 	}()
 	go func() {
@@ -256,5 +256,35 @@ func TestDropAllFailsPendingCalls(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("dropAll did not fail the pending call")
+	}
+}
+
+func TestAgentServesNothingUntilConfigured(t *testing.T) {
+	resolved, err := resolveSchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	toAgent, toCtl := newPipeEnd(), newPipeEnd()
+	go serveRPC(context.Background(), duplex{r: toAgent, w: toCtl}, "aaaaaaaaaaaaaaaa", resolved)
+	t.Cleanup(toAgent.Close)
+
+	call, _ := encodeFrame(rpcMessage{Kind: rpcCall, ID: "1", Name: "Wait", Arguments: map[string]any{"seconds": 0.01}})
+	toAgent.Write(call)
+	var fr frameReader
+	buf := make([]byte, 4096)
+	var got []rpcMessage
+	for len(got) < 2 {
+		n, err := toCtl.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msgs, err := fr.push(buf[:n])
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, msgs...)
+	}
+	if got[0].Kind != rpcHello || got[1].ID != "1" || !got[1].IsError || !strings.Contains(firstText(got[1].Content), "not enabled") {
+		t.Fatalf("an unconfigured agent answered %+v", got)
 	}
 }

@@ -3,13 +3,17 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -23,10 +27,11 @@ const (
 type rpcKind string
 
 const (
-	rpcHello  rpcKind = "hello"
-	rpcCall   rpcKind = "call"
-	rpcResult rpcKind = "result"
-	rpcBye    rpcKind = "bye"
+	rpcHello     rpcKind = "hello"
+	rpcConfigure rpcKind = "configure"
+	rpcCall      rpcKind = "call"
+	rpcResult    rpcKind = "result"
+	rpcBye       rpcKind = "bye"
 
 	rpcRestoreClipboard rpcKind = "restoreClipboard"
 )
@@ -34,7 +39,8 @@ const (
 type rpcMessage struct {
 	Kind      rpcKind        `json:"kind"`
 	ID        string         `json:"id,omitzero"`
-	Token     string         `json:"token,omitzero"`
+	Build     string         `json:"build,omitzero"`
+	Enabled   []string       `json:"enabled,omitzero"`
 	Version   string         `json:"version,omitzero"`
 	Name      string         `json:"name,omitzero"`
 	Arguments map[string]any `json:"arguments,omitzero"`
@@ -45,19 +51,41 @@ type rpcMessage struct {
 
 var errAgentRetired = errors.New("the controller retired this agent")
 
-const agentTokenBytes = 8
+const buildIDBytes = 8
 
-func newAgentToken() (string, error) {
-	var b [agentTokenBytes]byte
+func buildIDOf(r io.Reader) (string, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return "", fmt.Errorf("hashing the agent binary: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)[:buildIDBytes]), nil
+}
+
+func validBuildID(s string) bool {
+	b, err := hex.DecodeString(s)
+	return err == nil && len(b) == buildIDBytes
+}
+
+func newCallID() (string, error) {
+	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generating an agent token: %w", err)
+		return "", fmt.Errorf("generating a call id: %w", err)
 	}
 	return hex.EncodeToString(b[:]), nil
 }
 
-func validAgentToken(s string) bool {
-	b, err := hex.DecodeString(s)
-	return err == nil && len(b) == agentTokenBytes
+func toolNames(enabled map[string]bool) []string {
+	return slices.Sorted(maps.Keys(enabled))
+}
+
+func toolSet(names []string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		if _, known := handlers[n]; known {
+			set[n] = true
+		}
+	}
+	return set
 }
 
 func encodeFrame(msg rpcMessage) ([]byte, error) {
@@ -132,13 +160,16 @@ func (fw *frameWriter) answer(result rpcMessage, what string) {
 	}
 }
 
-func serveRPC(ctx context.Context, conn io.ReadWriter, token string, enabled map[string]bool, resolved map[string]*jsonschema.Resolved) error {
+func serveRPC(ctx context.Context, conn io.ReadWriter, build string, resolved map[string]*jsonschema.Resolved) error {
 	var calls sync.WaitGroup
 	defer calls.Wait()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var enabled atomic.Pointer[map[string]bool]
+	none := map[string]bool{}
+	enabled.Store(&none)
 	out := &frameWriter{w: conn}
-	if err := out.send(rpcMessage{Kind: rpcHello, Token: token, Version: Version}); err != nil {
+	if err := out.send(rpcMessage{Kind: rpcHello, Build: build, Version: Version}); err != nil {
 		return err
 	}
 	var in frameReader
@@ -153,8 +184,12 @@ func serveRPC(ctx context.Context, conn io.ReadWriter, token string, enabled map
 			switch msg.Kind {
 			case rpcBye:
 				return errAgentRetired
+			case rpcConfigure:
+				set := toolSet(msg.Enabled)
+				enabled.Store(&set)
 			case rpcCall:
-				calls.Go(func() { out.answer(runRPCTool(ctx, msg, enabled, resolved), msg.Name) })
+				tools := *enabled.Load()
+				calls.Go(func() { out.answer(runRPCTool(ctx, msg, tools, resolved), msg.Name) })
 			case rpcRestoreClipboard:
 				calls.Go(func() {
 					result := rpcMessage{Kind: rpcResult, ID: msg.ID}

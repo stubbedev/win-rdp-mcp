@@ -82,7 +82,7 @@ func run(argv []string) error {
 
 type options struct {
 	transport string
-	token     string
+	build     string
 	host      string
 	port      int
 	debug     bool
@@ -130,7 +130,7 @@ func parseOptions(argv []string) (options, error) {
 
 	var (
 		transport           = fs.StringP("transport", "t", "streamable-http", "transport: stdio, streamable-http, or rdpvc")
-		token               = fs.String("token", "", "for --transport rdpvc: the controller's session token")
+		build               = fs.String("build", "", "for --transport rdpvc: this agent's build id, set by the controller")
 		host                = fs.StringP("host", "H", "127.0.0.1", "bind address (0.0.0.0 exposes the server to the network)")
 		port                = fs.IntP("port", "p", 8090, "bind port")
 		debug               = fs.BoolP("debug", "d", false, "log every request")
@@ -163,7 +163,7 @@ func parseOptions(argv []string) (options, error) {
 
 	opts := options{
 		transport:  *transport,
-		token:      *token,
+		build:      *build,
 		host:       *host,
 		port:       *port,
 		debug:      *debug,
@@ -263,8 +263,8 @@ func validateOptions(opts options) error {
 		// The rdpvc transport is a virtual channel inside the controller's
 		// authenticated RDP session — there is no listener to gate, so the
 		// network rules below do not apply.
-		if !validAgentToken(opts.token) {
-			return fmt.Errorf("--transport rdpvc requires --token <%d hex characters>", agentTokenBytes*2)
+		if !validBuildID(opts.build) {
+			return fmt.Errorf("--transport rdpvc requires --build <%d hex characters>", buildIDBytes*2)
 		}
 		return nil
 	default:
@@ -309,7 +309,7 @@ func serve(opts options) error {
 	defer stop()
 
 	if opts.transport == "rdpvc" {
-		return runAgentChannel(ctx, opts.token, opts.enabled)
+		return runAgentChannel(ctx, opts.build)
 	}
 
 	srv := mcp.NewServer(

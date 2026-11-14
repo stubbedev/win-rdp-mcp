@@ -311,28 +311,44 @@ func TestPaintComposesBitmapsIntoTheFramebuffer(t *testing.T) {
 	}
 }
 
-func TestLaunchCommandCarriesTokenAndTierFlags(t *testing.T) {
-	p, err := newAgentProxy(nil, "", map[string]bool{"Shell": true})
+func testAgentExe(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "win-rdp-mcp.exe")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLaunchCommandNamesTheBuild(t *testing.T) {
+	p, err := newAgentProxy(nil, testAgentExe(t, "agent one"), map[string]bool{"Shell": true, "Click": true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := p.launchCommand()
-	want := `cmd /c \\tsclient\mcp\win-rdp-mcp.exe --transport rdpvc --token ` + p.link.token + ` --enable-tier3 --disable-tier2`
+	want := `cmd /c \\tsclient\mcp\win-rdp-mcp.exe --transport rdpvc --build ` + p.link.build
 	if got != want {
 		t.Fatalf("launch = %q, want %q", got, want)
 	}
 	if len(got) > runDialogMaxChars {
 		t.Fatalf("launch command is %d characters; the Run dialog truncates past %d", len(got), runDialogMaxChars)
 	}
-	if !validAgentToken(p.link.token) {
-		t.Fatalf("token %q is not a valid agent token", p.link.token)
+	if !validBuildID(p.link.build) {
+		t.Fatalf("build %q is not a valid build id", p.link.build)
 	}
-	other, err := newAgentProxy(nil, "", nil)
+	if !slices.Equal(p.link.enabled, []string{"Click", "Shell"}) {
+		t.Fatalf("enabled = %v, want the sorted tool names", p.link.enabled)
+	}
+	same, err := newAgentProxy(nil, testAgentExe(t, "agent one"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.link.token == other.link.token {
-		t.Fatal("two controllers drew the same token, so a stale agent could not be told apart")
+	other, err := newAgentProxy(nil, testAgentExe(t, "agent two"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.link.build != same.link.build || p.link.build == other.link.build {
+		t.Fatal("the build id must follow the binary's content")
 	}
 }
 

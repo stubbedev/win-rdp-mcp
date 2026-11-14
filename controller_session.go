@@ -90,6 +90,7 @@ type rdpConn struct {
 	clipboard       atomic.Pointer[string]
 	remoteClipboard atomic.Pointer[string]
 	lastPaint       atomic.Int64
+	fetched         atomic.Pointer[chan struct{}]
 }
 
 func (c *rdpConn) remoteClipboardText() string {
@@ -104,6 +105,9 @@ func (c *rdpConn) rememberRemoteClipboard(text string) {
 }
 
 func (c *rdpConn) clipboardText() string {
+	if fetched := c.fetched.Swap(nil); fetched != nil {
+		close(*fetched)
+	}
 	if p := c.clipboard.Load(); p != nil {
 		return *p
 	}
@@ -112,18 +116,23 @@ func (c *rdpConn) clipboardText() string {
 
 var errClipboardRefused = errors.New("the session refused the clipboard offer")
 
-func (c *rdpConn) offerClipboard(ctx context.Context, text string) error {
+func (c *rdpConn) offerClipboard(ctx context.Context, text string) (<-chan struct{}, error) {
+	fetched := make(chan struct{})
+	c.fetched.Store(&fetched)
 	var err error
 	for try := range clipboardOfferTries {
 		if try > 0 && !sleepCtx(ctx, clipboardOfferPause) {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 		err = c.offerClipboardOnce(ctx, text)
+		if err == nil {
+			return fetched, nil
+		}
 		if !errors.Is(err, errClipboardRefused) && !errors.Is(err, cliprdr.ErrClipboardNotReady) {
-			return err
+			return nil, err
 		}
 	}
-	return fmt.Errorf("%w %d times (is clipboard redirection disabled on the target?)", err, clipboardOfferTries)
+	return nil, fmt.Errorf("%w %d times (is clipboard redirection disabled on the target?)", err, clipboardOfferTries)
 }
 
 func (c *rdpConn) offerClipboardOnce(ctx context.Context, text string) error {

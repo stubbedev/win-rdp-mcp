@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"time"
 
@@ -20,23 +19,24 @@ const (
 	agentExeName      = "win-rdp-mcp.exe"
 	agentStartWait    = 30 * time.Second
 	agentReattachWait = 15 * time.Second
+	agentAdoptWait    = 2 * time.Second
 	driveAcceptWait   = 60 * time.Second
 	runDialogSettle   = 1200 * time.Millisecond
-	runCommandSettle  = 400 * time.Millisecond
 )
 
 var errAgentChannelClosed = errors.New("the in-session agent's channel closed")
 
 type agentLink struct {
-	token string
+	build   string
+	enabled []string
 
 	mu      sync.Mutex
 	current *agentConn
 	changed chan struct{}
 }
 
-func newAgentLink(token string) *agentLink {
-	return &agentLink{token: token, changed: make(chan struct{})}
+func newAgentLink(build string, enabled []string) *agentLink {
+	return &agentLink{build: build, enabled: enabled, changed: make(chan struct{})}
 }
 
 func (l *agentLink) Process([]byte) {}
@@ -144,9 +144,13 @@ func (c *agentConn) Process(data []byte) {
 	for _, msg := range msgs {
 		switch msg.Kind {
 		case rpcHello:
-			if msg.Token != c.link.token {
-				logf("retiring a stale agent %s left by an earlier controller", msg.Version)
+			if msg.Build != c.link.build {
+				logf("retiring an agent of another build (%s, version %s); this controller pushes %s", msg.Build, msg.Version, c.link.build)
 				c.retire()
+				continue
+			}
+			if err := c.write(rpcMessage{Kind: rpcConfigure, Enabled: c.link.enabled}); err != nil {
+				slog.Error("agent channel: configuring the agent", "err", err)
 				continue
 			}
 			c.link.attach(c, msg.Version)
@@ -191,7 +195,7 @@ func (c *agentConn) retire() {
 }
 
 func (c *agentConn) request(ctx context.Context, msg rpcMessage, what string) (rpcMessage, error) {
-	id, err := newAgentToken()
+	id, err := newCallID()
 	if err != nil {
 		return rpcMessage{}, err
 	}
@@ -254,15 +258,21 @@ type agentProxy struct {
 
 	launchMu      sync.Mutex
 	everConnected bool
+	adoptChecked  bool
 	failedLaunch  bool
 }
 
 func newAgentProxy(session *rdpSession, agentExe string, enabled map[string]bool) (*agentProxy, error) {
-	token, err := newAgentToken()
+	f, err := os.Open(agentExe)
+	if err != nil {
+		return nil, fmt.Errorf("opening the agent binary: %w", err)
+	}
+	defer f.Close()
+	build, err := buildIDOf(f)
 	if err != nil {
 		return nil, err
 	}
-	return &agentProxy{session: session, agentExe: agentExe, enabled: enabled, link: newAgentLink(token)}, nil
+	return &agentProxy{session: session, agentExe: agentExe, enabled: enabled, link: newAgentLink(build, toolNames(enabled))}, nil
 }
 
 func (p *agentProxy) ready() bool { return p.link.connection() != nil }
@@ -270,20 +280,7 @@ func (p *agentProxy) ready() bool { return p.link.connection() != nil }
 const runDialogMaxChars = 259
 
 func (p *agentProxy) launchCommand() string {
-	return `cmd /c ` + agentUNCPath + `\` + agentExeName + ` --transport rdpvc --token ` + p.link.token + p.tierFlags()
-}
-
-func (p *agentProxy) tierFlags() string {
-	hasTier3 := slices.ContainsFunc(tier3, func(n string) bool { return p.enabled[n] })
-	hasTier2 := slices.ContainsFunc(tier2, func(n string) bool { return p.enabled[n] })
-	flags := ""
-	if hasTier3 {
-		flags += " --enable-tier3"
-	}
-	if !hasTier2 {
-		flags += " --disable-tier2"
-	}
-	return flags
+	return `cmd /c ` + agentUNCPath + `\` + agentExeName + ` --transport rdpvc --build ` + p.link.build
 }
 
 func (p *agentProxy) connection(ctx context.Context) (*agentConn, error) {
@@ -302,11 +299,18 @@ func (p *agentProxy) connection(ctx context.Context) (*agentConn, error) {
 	if c := p.link.connection(); c != nil {
 		return c, nil
 	}
-	if p.everConnected {
+	switch {
+	case p.everConnected:
 		if c, err := p.link.wait(ctx, agentReattachWait); err == nil {
 			return c, nil
 		}
 		logf("the in-session agent did not come back within %s; launching it again", agentReattachWait)
+	case !p.adoptChecked:
+		p.adoptChecked = true
+		if c, err := p.link.wait(ctx, agentAdoptWait); err == nil {
+			p.everConnected = true
+			return c, nil
+		}
 	}
 	p.session.mu.Lock()
 	userClipboard := p.session.conn.remoteClipboardText()
@@ -341,45 +345,37 @@ func (p *agentProxy) launch(ctx context.Context, dismissLeftovers bool) error {
 
 	launch := p.launchCommand()
 	logf("launching the agent in the session: %s", launch)
-	type step struct {
-		settle time.Duration
-		act    func(*desktopInput) error
-	}
-	var steps []step
-	if dismissLeftovers {
-		steps = append(steps, step{runCommandSettle, func(in *desktopInput) error { return in.press(keyEsc) }})
-	}
-	steps = append(steps,
-		step{runDialogSettle, func(in *desktopInput) error { return p.openRunDialog(ctx, in) }},
-		step{runCommandSettle, func(in *desktopInput) error { return in.paste(ctx, launch) }},
-		step{0, func(in *desktopInput) error { return in.press(keyDel) }},
-		step{0, func(in *desktopInput) error { return in.press(keyEnter) }},
-	)
-	for _, step := range steps {
-		if _, err := p.session.withInput(ctx, func(in *desktopInput) (toolResult, error) {
-			return toolResult{}, step.act(in)
-		}); err != nil {
-			return fmt.Errorf("launching the agent through the Run dialog: %w", err)
-		}
-		if !sleepCtx(ctx, step.settle) {
-			return ctx.Err()
-		}
+	_, err = p.session.withInput(ctx, func(in *desktopInput) (toolResult, error) {
+		return toolResult{}, p.runInSession(ctx, in, launch, dismissLeftovers)
+	})
+	if err != nil {
+		return fmt.Errorf("launching the agent through the Run dialog: %w", err)
 	}
 	return nil
 }
 
-var errRunDialogDidNotOpen = errors.New("the Run dialog did not open (Win+R produced no screen change; is it blocked by policy or a full-screen app?), so the agent command was not pasted")
-
-func (p *agentProxy) openRunDialog(ctx context.Context, in *desktopInput) error {
+func (p *agentProxy) runInSession(ctx context.Context, in *desktopInput, command string, dismissLeftovers bool) error {
 	conn := p.session.conn
-	before := conn.lastPaint.Load()
+	settle := func() { conn.waitQuiet(ctx, captureQuiet, runDialogSettle, false) }
+	if dismissLeftovers {
+		if err := in.press(keyEsc); err != nil {
+			return err
+		}
+		settle()
+	}
 	if err := in.press(keyWin, keyR); err != nil {
 		return err
 	}
-	if !conn.waitPaintAfter(ctx, before, runDialogSettle) {
-		return errRunDialogDidNotOpen
+	settle()
+
+	if err := in.paste(ctx, command); err != nil {
+		return err
 	}
-	return nil
+	settle()
+	if err := in.press(keyDel); err != nil {
+		return err
+	}
+	return in.press(keyEnter)
 }
 
 func (p *agentProxy) call(ctx context.Context, name string, args map[string]any) (toolResult, error) {

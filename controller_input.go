@@ -22,8 +22,12 @@ type inputSink interface {
 const syncNumLockOnly = 0x2
 
 type clipboardOffer interface {
-	offerClipboard(ctx context.Context, text string) error
+	offerClipboard(ctx context.Context, text string) (fetched <-chan struct{}, err error)
 }
+
+const pasteFetchWait = 3 * time.Second
+
+var errPasteNotTaken = errors.New("nothing in the session took the paste (Ctrl+V reached no window that accepts text)")
 
 type pointerButton uint16
 
@@ -57,10 +61,23 @@ type desktopInput struct {
 }
 
 func (in *desktopInput) paste(ctx context.Context, text string) error {
-	if err := in.clipboard.offerClipboard(ctx, text); err != nil {
+	fetched, err := in.clipboard.offerClipboard(ctx, text)
+	if err != nil {
 		return err
 	}
-	return in.press(keyCtrl, keyV)
+	if err := in.press(keyCtrl, keyV); err != nil {
+		return err
+	}
+	timer := time.NewTimer(pasteFetchWait)
+	defer timer.Stop()
+	select {
+	case <-fetched:
+		return nil
+	case <-timer.C:
+		return errPasteNotTaken
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (in *desktopInput) checkPoint(x, y int) error {
