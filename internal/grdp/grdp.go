@@ -90,18 +90,9 @@ type RdpClient struct {
 	password string
 
 	// stored callbacks for re-registration on reconnect
-	onErrorFn         func(e error)
-	onCloseFn         func()
-	onSuccessFn       func()
-	onReadyFn         func()
-	onBitmapPaintFn   func([]Bitmap)
-	onPointerHideFn   func()
-	onPointerCachedFn func(uint16)
-	onPointerUpdateFn func(uint16, uint16, uint16, uint16, uint16, uint16, []byte, []byte)
-	onH264RawFn       func(destX, destY, w, h int, isKey bool, data []byte)
-	onH264I420Fn      func(destX, destY, w, h int, y []byte, yStride int, u []byte, uStride int, v []byte, vStride int)
-	onH264NV12Fn      func(destX, destY, w, h int, y []byte, yStride int, uv []byte, uvStride int)
-	onDecoderBrokenFn func()
+	onErrorFn       func(e error)
+	onCloseFn       func()
+	onBitmapPaintFn func([]Bitmap)
 
 	// clipboard callbacks and handler
 	onClipboardFn  func(text string) // remote → local
@@ -111,7 +102,6 @@ type RdpClient struct {
 	// reconnectMu serialises concurrent Reconnect() calls.
 	// reconnecting is also set during async server redirects to suppress
 	// user-facing callbacks while the transport is being re-established.
-	reconnectMu  sync.Mutex
 	reconnecting atomic.Bool
 
 	// mouse and wheel hold all coalescing state for pointer input.
@@ -567,12 +557,6 @@ func (g *RdpClient) doLogin(routingToken []byte) error {
 		}
 		g.onBitmapPaintFn(bs)
 	})
-	gfxHandler.SetDecoderBrokenCallback(func() {
-		slog.Debug("H.264 decoder broken")
-		if g.onDecoderBrokenFn != nil {
-			g.onDecoderBrokenFn()
-		}
-	})
 	gfxHandler.SetKeyframeRequestFunc(func() {
 		slog.Debug("H.264: requesting keyframe via force refresh")
 		if g.pdu != nil {
@@ -583,15 +567,6 @@ func (g *RdpClient) doLogin(routingToken []byte) error {
 			g.pdu.SendForceRefresh(uint16(g.width), uint16(g.height))
 		}
 	})
-	if g.onH264RawFn != nil {
-		gfxHandler.SetH264RawCallback(g.onH264RawFn)
-	}
-	if g.onH264I420Fn != nil {
-		gfxHandler.SetI420Callback(g.onH264I420Fn)
-	}
-	if g.onH264NV12Fn != nil {
-		gfxHandler.SetNV12Callback(g.onH264NV12Fn)
-	}
 	if g.avc444Disabled {
 		gfxHandler.SetAVC444Disabled(true)
 	}
@@ -774,22 +749,6 @@ func (g *RdpClient) OnClose(f func()) *RdpClient {
 	return g
 }
 
-func (g *RdpClient) OnSuccess(f func()) *RdpClient {
-	g.onSuccessFn = f
-	if g.sec != nil {
-		g.sec.On("success", f)
-	}
-	return g
-}
-
-func (g *RdpClient) OnReady(f func()) *RdpClient {
-	g.onReadyFn = f
-	if g.pdu != nil {
-		g.pdu.On("ready", f)
-	}
-	return g
-}
-
 // OnBitmap registers a callback for bitmap update events.
 // For compressed bitmaps, Bitmap.Data is borrowed from an internal pool and
 // is valid only for the duration of the paint call. If you need to retain
@@ -857,135 +816,6 @@ func (g *RdpClient) OnBitmap(paint func([]Bitmap)) *RdpClient {
 			g.decompressPool.Put(buf[:cap(buf)])
 		}
 	})
-	return g
-}
-
-func (g *RdpClient) OnPointerHide(f func()) *RdpClient {
-	g.onPointerHideFn = f
-	if g.pdu != nil {
-		g.pdu.On("pointer_hide", f)
-	}
-	return g
-}
-
-func (g *RdpClient) OnPointerCached(f func(uint16)) *RdpClient {
-	g.onPointerCachedFn = f
-	if g.pdu != nil {
-		g.pdu.On("pointer_cached", f)
-	}
-	return g
-}
-
-func (g *RdpClient) OnPointerUpdate(f func(uint16, uint16, uint16, uint16, uint16, uint16, []byte, []byte)) *RdpClient {
-	g.onPointerUpdateFn = f
-	if g.pdu != nil {
-		g.pdu.On("pointer_update", func(p *pdu.FastPathUpdatePointerPDU) {
-			w := int(p.Width)
-			h := int(p.Height)
-
-			// XOR mask data is stored bottom-up per MS-RDPBCGR spec; flip to top-down.
-			// Stride is padded to a 2-byte boundary.
-			var xorData []byte
-			if len(p.Data) > 0 && h > 0 && w > 0 {
-				xorBpp := int(p.XorBpp)
-				if xorBpp == 0 {
-					xorBpp = 1
-				}
-				xorStride := ((w*xorBpp + 15) / 16) * 2
-				xorData = make([]byte, len(p.Data))
-				copy(xorData, p.Data)
-				tmp := make([]byte, xorStride)
-				for y := 0; y < h/2; y++ {
-					top := y * xorStride
-					bot := (h - 1 - y) * xorStride
-					if top+xorStride <= len(xorData) && bot+xorStride <= len(xorData) {
-						copy(tmp, xorData[top:top+xorStride])
-						copy(xorData[top:top+xorStride], xorData[bot:bot+xorStride])
-						copy(xorData[bot:bot+xorStride], tmp)
-					}
-				}
-			} else {
-				xorData = p.Data
-			}
-
-			// AND mask data is also bottom-up; flip to top-down.
-			// Stride is 1-bpp padded to a 2-byte boundary.
-			var andMask []byte
-			if len(p.Mask) > 0 && h > 0 && w > 0 {
-				andStride := ((w + 15) / 16) * 2
-				andMask = make([]byte, len(p.Mask))
-				copy(andMask, p.Mask)
-				tmp := make([]byte, andStride)
-				for y := 0; y < h/2; y++ {
-					top := y * andStride
-					bot := (h - 1 - y) * andStride
-					if top+andStride <= len(andMask) && bot+andStride <= len(andMask) {
-						copy(tmp, andMask[top:top+andStride])
-						copy(andMask[top:top+andStride], andMask[bot:bot+andStride])
-						copy(andMask[bot:bot+andStride], tmp)
-					}
-				}
-			} else {
-				andMask = p.Mask
-			}
-
-			f(p.CacheIdx, p.XorBpp, p.X, p.Y, p.Width, p.Height, andMask, xorData)
-		})
-	}
-	return g
-}
-
-// OnH264Raw registers a callback that receives raw H.264 NAL unit data when
-// the built-in decoder is unavailable (e.g. WASM builds without CGo).
-// destX, destY are the top-left canvas coordinates; isKey flags an IDR frame.
-// The caller owns data and may retain it beyond the callback.
-func (g *RdpClient) OnH264Raw(fn func(destX, destY, w, h int, isKey bool, data []byte)) *RdpClient {
-	g.onH264RawFn = fn
-	return g
-}
-
-// OnH264I420 registers a callback that receives decoded H.264 frames in I420
-// planar format (Y, U, V planes with associated strides).  When set, the
-// decoded frame is NOT delivered via OnBitmap; the caller is responsible for
-// rendering it directly (e.g. via an SDL2 IYUV texture for GPU-accelerated
-// YUV→RGB conversion).  When I420 extraction is unavailable for a frame
-// (e.g. non-YUV420P/NV12 formats), grdp falls back to OnBitmap delivery.
-// destX, destY are top-left canvas coordinates; w, h are frame dimensions.
-// The plane slices are only valid for the duration of the callback; copy them
-// if they need to be retained beyond the callback's return.
-func (g *RdpClient) OnH264I420(fn func(destX, destY, w, h int, y []byte, yStride int, u []byte, uStride int, v []byte, vStride int)) *RdpClient {
-	g.onH264I420Fn = fn
-	if g.gfxHandler != nil {
-		g.gfxHandler.SetI420Callback(fn)
-	}
-	return g
-}
-
-// OnH264NV12 registers a callback that receives decoded H.264 frames in NV12
-// format (Y plane plus interleaved UV plane).  This is the fastest SDL2 path
-// on platforms whose hardware decoder already outputs NV12 (notably macOS
-// VideoToolbox), because callers can upload the planes directly with an NV12
-// texture and avoid NV12->I420 deinterleaving in grdp.  When NV12 extraction
-// is unavailable for a frame, grdp falls back to OnBitmap delivery.
-// destX, destY are top-left canvas coordinates; w, h are frame dimensions.
-// The plane slices are only valid for the duration of the callback; copy them
-// if they need to be retained beyond the callback's return.
-func (g *RdpClient) OnH264NV12(fn func(destX, destY, w, h int, y []byte, yStride int, uv []byte, uvStride int)) *RdpClient {
-	g.onH264NV12Fn = fn
-	if g.gfxHandler != nil {
-		g.gfxHandler.SetNV12Callback(fn)
-	}
-	return g
-}
-
-// OnDecoderBroken registers a callback that is invoked when the H.264 decoder
-// enters an unrecoverable state (all hard-reset attempts exhausted).  When
-// this callback is set, grdp does NOT automatically call Reconnect; the
-// application is responsible for deciding when to reconnect (e.g. via its
-// own stall watchdog).  If no callback is registered, grdp falls back to
-// the previous behaviour of reconnecting immediately.
-func (g *RdpClient) OnDecoderBroken(f func()) *RdpClient {
-	g.onDecoderBrokenFn = f
 	return g
 }
 
@@ -1256,121 +1086,6 @@ func (g *RdpClient) MouseDown(button int, x, y int) {
 	g.notifyGfxLocalInput()
 }
 
-// SetResolution requests a desktop resolution change via the MS-RDPEDISP
-// Display Update Virtual Channel.  The server will reshape the desktop to the
-// given dimensions and send a fresh RDPGFX ResetGraphics command.
-//
-// width must be even and both width and height must be >= 200.
-// This method is a no-op when the RDPEDISP channel has not been established
-// (e.g. when the server does not support it).
-func (g *RdpClient) SetResolution(width, height int) {
-	if g.dispHandler == nil {
-		slog.Warn("SetResolution: RDPEDISP channel not available")
-		return
-	}
-	w := uint32(width)
-	if w%2 != 0 {
-		w++
-	}
-	w = max(w, 200)
-	h := uint32(height)
-	h = max(h, 200)
-	g.dispHandler.SendMonitorLayout([]rdpedisp.Monitor{
-		{
-			Flags:              rdpedisp.MonitorFlagPrimary,
-			Left:               0,
-			Top:                0,
-			Width:              w,
-			Height:             h,
-			PhysicalWidth:      0,
-			PhysicalHeight:     0,
-			Orientation:        0,
-			DesktopScaleFactor: 100,
-			DeviceScaleFactor:  100,
-		},
-	})
-	slog.Debug("SetResolution", "width", w, "height", h)
-}
-
-// SetQueueDepthHint controls the frame-rate and encoding quality reported to
-// the server via the RDPGFX FRAME_ACKNOWLEDGE queueDepth field
-// (MS-RDPEGFX 2.2.2.8).
-//
-// A higher value signals a larger client decode backlog, causing the server to
-// slow down or reduce H.264/RFX encoding quality.  0 (default) means "report
-// the real decode-queue length" — no artificial throttling.
-//
-// Typical values: 0 = off, 10–50 = moderate throttle, 100+ = heavy throttle.
-// Use 0xFFFFFFFF to pause new frames entirely (the stream resumes when hint is
-// reduced or cleared).
-func (g *RdpClient) SetQueueDepthHint(depth uint32) {
-	if g.gfxHandler != nil {
-		g.gfxHandler.SetQueueDepthHint(depth)
-	}
-}
-
-// RequestKeyframe asks the server to send a fresh full-screen IDR keyframe via
-// the SuppressOutput off→on toggle (SendForceRefresh).  It is the same request
-// the RDPGFX decoder issues internally when it stalls, exposed publicly so the
-// frontend's black-screen watchdog can recover an initial all-black session —
-// where the server sent its first IDR before the desktop finished painting
-// (decoded as a black warm-up frame and dropped) and then went idle — without
-// the cost of a full reconnect.  Safe to call from the render loop goroutine.
-func (g *RdpClient) RequestKeyframe() {
-	if g.closed.Load() {
-		return
-	}
-	if g.pdu != nil {
-		g.pdu.SendForceRefresh(uint16(g.width), uint16(g.height))
-	}
-}
-
-func (g *RdpClient) Reconnect(width, height int) error {
-	if g.closed.Load() {
-		return fmt.Errorf("client is closed")
-	}
-
-	g.reconnectMu.Lock()
-	defer g.reconnectMu.Unlock()
-
-	g.reconnecting.Store(true)
-	defer func() { g.reconnecting.Store(false) }()
-
-	slog.Debug("Reconnect", "width", width, "height", height)
-	g.closeTransport()
-	g.width = width
-	g.height = height
-	g.eventReady.Store(false)
-
-	const maxRetries = 3
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		// No delay on the first attempt: the transport was already closed above
-		// so the server has already started session teardown.  Use exponential
-		// backoff (1s, 2s) only for retries after a failed login.
-		delay := time.Duration(0)
-		if attempt > 1 {
-			delay = time.Duration(1<<uint(attempt-2)) * time.Second
-		}
-		slog.Debug("Reconnect: waiting before attempt", "attempt", attempt, "delay", delay)
-		time.Sleep(delay)
-
-		err := g.Login(g.domain, g.user, g.password)
-		if err != nil {
-			slog.Warn("Reconnect: login failed", "attempt", attempt, "err", err)
-			if attempt < maxRetries {
-				g.closeTransport()
-				continue
-			}
-			return fmt.Errorf("[reconnect err] %v", err)
-		}
-
-		slog.Debug("Reconnect: succeeded", "attempt", attempt)
-		return nil
-	}
-
-	return fmt.Errorf("[reconnect failed after %d attempts]", maxRetries)
-}
-
 func (g *RdpClient) reregisterCallbacks() {
 	if g.onErrorFn != nil {
 		g.OnError(g.onErrorFn)
@@ -1378,26 +1093,8 @@ func (g *RdpClient) reregisterCallbacks() {
 	if g.onCloseFn != nil {
 		g.OnClose(g.onCloseFn)
 	}
-	if g.onSuccessFn != nil {
-		g.OnSuccess(g.onSuccessFn)
-	}
-	if g.onReadyFn != nil {
-		g.OnReady(g.onReadyFn)
-	}
 	if g.onBitmapPaintFn != nil {
 		g.OnBitmap(g.onBitmapPaintFn)
-	}
-	if g.onPointerHideFn != nil {
-		g.OnPointerHide(g.onPointerHideFn)
-	}
-	if g.onPointerCachedFn != nil {
-		g.OnPointerCached(g.onPointerCachedFn)
-	}
-	if g.onPointerUpdateFn != nil {
-		g.OnPointerUpdate(g.onPointerUpdateFn)
-	}
-	if g.onDecoderBrokenFn != nil {
-		g.OnDecoderBroken(g.onDecoderBrokenFn)
 	}
 }
 

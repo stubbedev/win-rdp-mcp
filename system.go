@@ -198,6 +198,7 @@ func sameProcessName(want, actual string) bool {
 
 func systemInfoTool(ctx context.Context, args arguments) (toolResult, error) {
 	var b strings.Builder
+	fmt.Fprintf(&b, "**win-rdp-mcp:** %s\n", Version)
 
 	if info, err := host.InfoWithContext(ctx); err == nil {
 		fmt.Fprintf(&b, "**System:** %s %s (%s)\n", info.Platform, info.PlatformVersion, info.KernelArch)

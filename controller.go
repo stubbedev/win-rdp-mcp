@@ -238,6 +238,9 @@ func routeTool(name string, schema *jsonschema.Resolved, sess *rdpSession, proxy
 		if err != nil {
 			return errorResult(name + " error: " + err.Error()), nil
 		}
+		if name == "GetSystemInfo" && len(result.Content) > 0 && result.Content[0].Type == "text" {
+			result.Content[0].Text = insertAfterTaskID(result.Content[0].Text, controllerSummary(sess, proxy)+"\n")
+		}
 		return toCallResult(result), nil
 	}
 }
@@ -279,6 +282,20 @@ func localDesktop(ctx context.Context, name string, sess *rdpSession, proxy *age
 		}
 		return toolResult{}, fmt.Errorf("no local handler for %s", name)
 	})
+}
+
+func insertAfterTaskID(text, insert string) string {
+	if strings.HasPrefix(text, "[task:") {
+		if end := strings.Index(text, "] "); end >= 0 {
+			return text[:end+2] + insert + text[end+2:]
+		}
+	}
+	return insert + text
+}
+
+func controllerSummary(sess *rdpSession, proxy *agentProxy) string {
+	return fmt.Sprintf("**Controller:** win-rdp-mcp %s, RDP to %s as %s (%dx%d), agent build %s",
+		Version, sess.host, sess.user, sess.size.width, sess.size.height, proxy.link.build)
 }
 
 func controllerInstructions(noAgent bool) string {

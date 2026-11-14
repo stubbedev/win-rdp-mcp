@@ -485,3 +485,12 @@ func TestMultiLineTextIsNeverPasted(t *testing.T) {
 		t.Fatal("short text would be pasted")
 	}
 }
+
+func TestInsertAfterTaskID(t *testing.T) {
+	if got := insertAfterTaskID("[task:abc] body", "X\n"); got != "[task:abc] X\nbody" {
+		t.Fatalf("got %q", got)
+	}
+	if got := insertAfterTaskID("body", "X\n"); got != "X\nbody" {
+		t.Fatalf("got %q", got)
+	}
+}
