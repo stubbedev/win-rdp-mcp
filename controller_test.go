@@ -412,3 +412,76 @@ func TestCheckAgentExe(t *testing.T) {
 		t.Fatal("a directory was accepted as the agent")
 	}
 }
+
+type fakeClipboard struct {
+	offers   []string
+	previous string
+	takes    bool
+}
+
+func (f *fakeClipboard) offerClipboard(_ context.Context, text string) (<-chan struct{}, error) {
+	f.offers = append(f.offers, text)
+	ch := make(chan struct{})
+	if f.takes {
+		close(ch)
+	}
+	return ch, nil
+}
+
+func (f *fakeClipboard) remoteClipboardText() string { return f.previous }
+
+func TestLongSingleLineTextIsPastedAndTheClipboardRestored(t *testing.T) {
+	in, sink := newTestInput()
+	clip := &fakeClipboard{previous: "user text", takes: true}
+	in.clipboard = clip
+	long := strings.Repeat("x", pasteMinRunes)
+	res, err := in.typeText(context.Background(), arguments{"text": long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(clip.offers, []string{long, "user text"}) {
+		t.Fatalf("offers = %q, want the text then the user's clipboard", clip.offers)
+	}
+	if !strings.HasPrefix(firstText(res.Content), "Pasted") {
+		t.Fatalf("result = %q", firstText(res.Content))
+	}
+	for _, e := range sink.events {
+		if e.kind == "unicode" || (e.kind == "key" && e.code == uint16(characterKeys['x'].scan)) {
+			t.Fatalf("pasted text was also typed: %+v", e)
+		}
+	}
+}
+
+func TestPasteNobodyTakesFallsBackToTyping(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the paste timeout")
+	}
+	in, sink := newTestInput()
+	in.clipboard = &fakeClipboard{}
+	long := strings.Repeat("y", pasteMinRunes)
+	res, err := in.typeText(context.Background(), arguments{"text": long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(firstText(res.Content), "Typed") {
+		t.Fatalf("result = %q", firstText(res.Content))
+	}
+	typed := 0
+	for _, e := range sink.events {
+		if e.kind == "key" && e.code == uint16(characterKeys['y'].scan) && !e.release {
+			typed++
+		}
+	}
+	if typed != pasteMinRunes {
+		t.Fatalf("typed %d characters, want %d", typed, pasteMinRunes)
+	}
+}
+
+func TestMultiLineTextIsNeverPasted(t *testing.T) {
+	if pasteWorthy(strings.Repeat("z", pasteMinRunes) + "\n") {
+		t.Fatal("multi-line text would be pasted, which terminals interrupt with a confirmation")
+	}
+	if pasteWorthy("short") {
+		t.Fatal("short text would be pasted")
+	}
+}

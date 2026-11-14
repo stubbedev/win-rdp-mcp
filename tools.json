@@ -8,7 +8,11 @@
         "use_vision": { "type": "boolean", "default": true, "description": "Include the screenshot image (default true)." },
         "quality": { "type": "integer", "default": 75, "minimum": 1, "maximum": 100, "description": "JPEG quality 1-100. Lower = smaller." },
         "max_width": { "type": "integer", "default": 0, "description": "Max image width in pixels. 0 = native resolution." },
-        "monitor": { "type": "integer", "default": 0, "description": "Monitor to capture. 0 = all monitors, 1/2/3 = a specific monitor." }
+        "monitor": { "type": "integer", "default": 0, "description": "Monitor to capture. 0 = all monitors, 1/2/3 = a specific monitor." },
+        "left": { "type": "integer", "default": 0, "description": "Left edge of a region to capture; all four zero = the whole screen." },
+        "top": { "type": "integer", "default": 0 },
+        "right": { "type": "integer", "default": 0 },
+        "bottom": { "type": "integer", "default": 0 }
       },
       "additionalProperties": false
     }

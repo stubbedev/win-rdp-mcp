@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp/protocol/pdu"
 )
@@ -21,8 +22,15 @@ type inputSink interface {
 
 const syncNumLockOnly = 0x2
 
-type clipboardOffer interface {
+type sessionClipboard interface {
 	offerClipboard(ctx context.Context, text string) (fetched <-chan struct{}, err error)
+	remoteClipboardText() string
+}
+
+const pasteMinRunes = 200
+
+func pasteWorthy(text string) bool {
+	return utf8.RuneCountInString(text) >= pasteMinRunes && !strings.ContainsAny(text, "\r\n\t")
 }
 
 const pasteFetchWait = 3 * time.Second
@@ -55,7 +63,7 @@ func parsePointerButton(name string) (pointerButton, error) {
 
 type desktopInput struct {
 	sink      inputSink
-	clipboard clipboardOffer
+	clipboard sessionClipboard
 	size      sessionSize
 	pointer   *image.Point
 }
@@ -285,7 +293,8 @@ func (in *desktopInput) typeText(ctx context.Context, args arguments) (toolResul
 			return toolResult{}, err
 		}
 	}
-	if err := in.typeString(text); err != nil {
+	verb, err := in.enterText(ctx, text)
+	if err != nil {
 		return toolResult{}, err
 	}
 	if args.boolOr("press_enter", false) {
@@ -293,7 +302,26 @@ func (in *desktopInput) typeText(ctx context.Context, args arguments) (toolResul
 			return toolResult{}, err
 		}
 	}
-	return textResult("Typed %d characters", len([]rune(text))), nil
+	return textResult("%s %d characters", verb, utf8.RuneCountInString(text)), nil
+}
+
+func (in *desktopInput) enterText(ctx context.Context, text string) (string, error) {
+	if pasteWorthy(text) {
+		previous := in.clipboard.remoteClipboardText()
+		err := in.paste(ctx, text)
+		if err == nil {
+			if previous != "" {
+				if _, err := in.clipboard.offerClipboard(ctx, previous); err != nil {
+					logf("could not put the session clipboard back after pasting: %v", err)
+				}
+			}
+			return "Pasted", nil
+		}
+		if !errors.Is(err, errPasteNotTaken) {
+			return "", err
+		}
+	}
+	return "Typed", in.typeString(text)
 }
 
 func (in *desktopInput) move(ctx context.Context, args arguments) (toolResult, error) {

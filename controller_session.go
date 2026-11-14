@@ -426,9 +426,17 @@ func (s *rdpSession) snapshot(ctx context.Context, args arguments, proxy *agentP
 		}()
 	}
 
+	var shot image.Image = img
+	if region, ok := regionFromArgs(args); ok {
+		region = region.Intersect(img.Bounds())
+		if region.Empty() {
+			return toolResult{}, fmt.Errorf("the region lies outside the %dx%d session", s.size.width, s.size.height)
+		}
+		shot = img.SubImage(region)
+	}
 	var blocks []contentBlock
 	if args.boolOr("use_vision", true) {
-		data, err := jpegBytes(img, args.intOr("quality", 75), args.intOr("max_width", 0))
+		data, err := jpegBytes(shot, args.intOr("quality", 75), args.intOr("max_width", 0))
 		if err != nil {
 			return toolResult{}, fmt.Errorf("encoding the screenshot: %w", err)
 		}

@@ -29,7 +29,13 @@ func snapshotTool(ctx context.Context, args arguments) (toolResult, error) {
 
 	var parts []contentBlock
 	if useVision {
-		img, _, err := captureWithReconnect(ctx, monitor)
+		var img *image.RGBA
+		var err error
+		if region, ok := regionFromArgs(args); ok {
+			img, err = captureRect(region)
+		} else {
+			img, _, err = captureWithReconnect(ctx, monitor)
+		}
 		if err != nil {
 			return toolResult{}, err
 		}
