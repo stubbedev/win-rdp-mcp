@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -200,5 +201,60 @@ func TestChannelCloseFailsPendingCalls(t *testing.T) {
 	}
 	if h.link.connection() != nil {
 		t.Fatal("the closed connection is still attached")
+	}
+}
+
+func TestRestoreClipboardReportsAgentErrors(t *testing.T) {
+	h := startAgent(t, "aaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaa", map[string]bool{})
+	conn, err := h.link.wait(context.Background(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = conn.restoreClipboard(context.Background(), "previous text")
+	if runtime.GOOS == "windows" {
+		if err != nil {
+			t.Fatalf("restoring the clipboard on Windows: %v", err)
+		}
+		return
+	}
+	if err == nil || !strings.Contains(err.Error(), "restoring the clipboard") {
+		t.Fatalf("restore off Windows returned %v, want the agent's error", err)
+	}
+}
+
+func TestUnencodableResultIsAnsweredWithAnError(t *testing.T) {
+	var buf bytes.Buffer
+	out := &frameWriter{w: &buf}
+	out.answer(rpcMessage{Kind: rpcResult, ID: "42", Content: []contentBlock{{Type: "text", Text: "45\xf8F"}}}, "OCR")
+	var fr frameReader
+	msgs, err := fr.push(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].ID != "42" || !msgs[0].IsError || !strings.Contains(firstText(msgs[0].Content), "could not send the OCR result") {
+		t.Fatalf("got %+v, want one error result for call 42", msgs)
+	}
+}
+
+func TestDropAllFailsPendingCalls(t *testing.T) {
+	h := startAgent(t, "aaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaa", map[string]bool{"Wait": true})
+	conn, err := h.link.wait(context.Background(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := conn.call(context.Background(), "Wait", map[string]any{"seconds": 30})
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	h.link.dropAll()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errAgentChannelClosed) {
+			t.Fatalf("pending call ended with %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("dropAll did not fail the pending call")
 	}
 }

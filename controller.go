@@ -98,6 +98,7 @@ func controlMain(argv []string) error {
 			return err
 		}
 		sess.agentChannel = proxy.link
+		sess.onDisconnect = proxy.link.dropAll
 		sess.onFirstConnect = func(ctx context.Context) {
 			if _, err := proxy.connection(ctx); err != nil {
 				logf("agent start failed (desktop tools still work): %v", err)

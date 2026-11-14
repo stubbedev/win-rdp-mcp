@@ -27,6 +27,8 @@ const (
 	rpcCall   rpcKind = "call"
 	rpcResult rpcKind = "result"
 	rpcBye    rpcKind = "bye"
+
+	rpcRestoreClipboard rpcKind = "restoreClipboard"
 )
 
 type rpcMessage struct {
@@ -38,6 +40,7 @@ type rpcMessage struct {
 	Arguments map[string]any `json:"arguments,omitzero"`
 	Content   []contentBlock `json:"content,omitzero"`
 	IsError   bool           `json:"isError,omitzero"`
+	Text      string         `json:"text,omitzero"`
 }
 
 var errAgentRetired = errors.New("the controller retired this agent")
@@ -116,6 +119,19 @@ func (fw *frameWriter) send(msg rpcMessage) error {
 	return nil
 }
 
+func (fw *frameWriter) answer(result rpcMessage, what string) {
+	err := fw.send(result)
+	if err == nil {
+		return
+	}
+	logf("answering %s (%s): %v", result.ID, what, err)
+	fallback := rpcMessage{Kind: rpcResult, ID: result.ID, IsError: true,
+		Content: []contentBlock{{Type: "text", Text: fmt.Sprintf("the agent could not send the %s result: %v", what, err)}}}
+	if err := fw.send(fallback); err != nil {
+		logf("answering %s (%s) with the failure: %v", result.ID, what, err)
+	}
+}
+
 func serveRPC(ctx context.Context, conn io.ReadWriter, token string, enabled map[string]bool, resolved map[string]*jsonschema.Resolved) error {
 	var calls sync.WaitGroup
 	defer calls.Wait()
@@ -138,11 +154,15 @@ func serveRPC(ctx context.Context, conn io.ReadWriter, token string, enabled map
 			case rpcBye:
 				return errAgentRetired
 			case rpcCall:
+				calls.Go(func() { out.answer(runRPCTool(ctx, msg, enabled, resolved), msg.Name) })
+			case rpcRestoreClipboard:
 				calls.Go(func() {
-					result := runRPCTool(ctx, msg, enabled, resolved)
-					if err := out.send(result); err != nil {
-						logf("answering %s (%s): %v", msg.ID, msg.Name, err)
+					result := rpcMessage{Kind: rpcResult, ID: msg.ID}
+					if err := setClipboard(msg.Text); err != nil {
+						result.IsError = true
+						result.Content = []contentBlock{{Type: "text", Text: "restoring the clipboard: " + err.Error()}}
 					}
+					out.answer(result, "clipboard restore")
 				})
 			default:
 				logf("ignoring unexpected %q message from the controller", msg.Kind)

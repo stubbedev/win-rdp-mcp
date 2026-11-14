@@ -520,7 +520,8 @@ func psQuote(s string) string {
 // output. A non-zero exit becomes an error carrying that output, since
 // PowerShell reports most failures on stderr with a zero-length stdout.
 func runPowerShell(ctx context.Context, command string, timeout time.Duration) (string, error) {
-	return runCommand(ctx, timeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
+	return runCommand(ctx, timeout, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+		"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "+command)
 }
 
 const commandWaitDelay = 5 * time.Second
@@ -533,7 +534,7 @@ func runCommand(ctx context.Context, timeout time.Duration, name string, args ..
 	cmd.WaitDelay = commandWaitDelay
 	hideChildConsole(cmd)
 	out, err := cmd.CombinedOutput()
-	text := strings.TrimSpace(string(out))
+	text := strings.TrimSpace(strings.ToValidUTF8(string(out), "\uFFFD"))
 
 	if ctx.Err() == context.DeadlineExceeded {
 		return text, fmt.Errorf("%s timed out after %s", filepath.Base(name), timeout)

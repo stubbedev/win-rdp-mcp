@@ -60,6 +60,7 @@ type rdpSession struct {
 
 	life           context.Context
 	onFirstConnect func(context.Context)
+	onDisconnect   func()
 	agentChannel   drdynvc.DvcChannelHandler
 
 	workdir   string
@@ -82,7 +83,19 @@ type rdpConn struct {
 	doneOnce sync.Once
 	cause    error
 
-	clipboard atomic.Pointer[string]
+	clipboard       atomic.Pointer[string]
+	remoteClipboard atomic.Pointer[string]
+}
+
+func (c *rdpConn) remoteClipboardText() string {
+	if p := c.remoteClipboard.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func (c *rdpConn) rememberRemoteClipboard(text string) {
+	c.remoteClipboard.Store(&text)
 }
 
 func (c *rdpConn) clipboardText() string {
@@ -264,9 +277,9 @@ func (s *rdpSession) connect() (*rdpConn, error) {
 		client.RegisterDynamicChannel(agentChannelName, s.agentChannel)
 	}
 	client.OnBitmap(conn.paint)
-	client.OnClipboard(nil, conn.clipboardText)
-	client.OnError(func(err error) { conn.end(err) })
-	client.OnClose(func() { conn.end(nil) })
+	client.OnClipboard(conn.rememberRemoteClipboard, conn.clipboardText)
+	client.OnError(func(err error) { s.lost(conn, err) })
+	client.OnClose(func() { s.lost(conn, nil) })
 	if err := client.Login(s.domain, s.user, s.pass); err != nil {
 		client.Close()
 		reason := err.Error()
@@ -276,6 +289,13 @@ func (s *rdpSession) connect() (*rdpConn, error) {
 		return nil, fmt.Errorf("RDP connection to %s as %s failed: %s", s.host, s.user, reason)
 	}
 	return conn, nil
+}
+
+func (s *rdpSession) lost(conn *rdpConn, cause error) {
+	conn.end(cause)
+	if s.onDisconnect != nil {
+		s.onDisconnect()
+	}
 }
 
 func (s *rdpSession) wake(ctx context.Context) error {

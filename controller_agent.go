@@ -78,6 +78,12 @@ func (l *agentLink) detach(c *agentConn) {
 	}
 }
 
+func (l *agentLink) dropAll() {
+	if c := l.connection(); c != nil {
+		c.OnChannelClosed()
+	}
+}
+
 func (l *agentLink) wait(ctx context.Context, timeout time.Duration) (*agentConn, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -185,34 +191,54 @@ func (c *agentConn) retire() {
 	}
 }
 
-func (c *agentConn) call(ctx context.Context, name string, args map[string]any) (toolResult, error) {
+func (c *agentConn) request(ctx context.Context, msg rpcMessage, what string) (rpcMessage, error) {
 	id, err := newAgentToken()
 	if err != nil {
-		return toolResult{}, err
+		return rpcMessage{}, err
 	}
+	msg.ID = id
 	reply := make(chan rpcMessage, 1)
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return toolResult{}, errAgentChannelClosed
+		return rpcMessage{}, errAgentChannelClosed
 	}
 	c.pending[id] = reply
 	c.mu.Unlock()
 
-	if err := c.write(rpcMessage{Kind: rpcCall, ID: id, Name: name, Arguments: args}); err != nil {
+	if err := c.write(msg); err != nil {
 		c.forget(id)
-		return toolResult{}, err
+		return rpcMessage{}, err
 	}
 	select {
-	case msg, ok := <-reply:
+	case res, ok := <-reply:
 		if !ok {
-			return toolResult{}, fmt.Errorf("%w while %s was running, so its result was lost", errAgentChannelClosed, name)
+			return rpcMessage{}, fmt.Errorf("%w while %s was running, so its result was lost", errAgentChannelClosed, what)
 		}
-		return toolResult{Content: msg.Content, IsError: msg.IsError}, nil
+		return res, nil
 	case <-ctx.Done():
 		c.forget(id)
-		return toolResult{}, ctx.Err()
+		return rpcMessage{}, ctx.Err()
 	}
+}
+
+func (c *agentConn) call(ctx context.Context, name string, args map[string]any) (toolResult, error) {
+	res, err := c.request(ctx, rpcMessage{Kind: rpcCall, Name: name, Arguments: args}, name)
+	if err != nil {
+		return toolResult{}, err
+	}
+	return toolResult{Content: res.Content, IsError: res.IsError}, nil
+}
+
+func (c *agentConn) restoreClipboard(ctx context.Context, text string) error {
+	res, err := c.request(ctx, rpcMessage{Kind: rpcRestoreClipboard, Text: text}, "the clipboard restore")
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return errors.New(firstText(res.Content))
+	}
+	return nil
 }
 
 func (c *agentConn) forget(id string) {
@@ -283,6 +309,9 @@ func (p *agentProxy) connection(ctx context.Context) (*agentConn, error) {
 		}
 		logf("the in-session agent did not come back within %s; launching it again", agentReattachWait)
 	}
+	p.session.mu.Lock()
+	userClipboard := p.session.conn.remoteClipboardText()
+	p.session.mu.Unlock()
 	if err := p.launch(ctx, p.failedLaunch); err != nil {
 		p.failedLaunch = true
 		return nil, err
@@ -293,6 +322,9 @@ func (p *agentProxy) connection(ctx context.Context) (*agentConn, error) {
 		return nil, fmt.Errorf("%w (the Run-dialog launch failed, or Defender blocked the agent)", err)
 	}
 	p.everConnected, p.failedLaunch = true, false
+	if err := c.restoreClipboard(ctx, userClipboard); err != nil {
+		logf("could not restore the session clipboard after launching the agent: %v", err)
+	}
 	return c, nil
 }
 
