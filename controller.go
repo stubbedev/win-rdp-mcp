@@ -20,7 +20,7 @@ import (
 
 var desktopTools = map[string]bool{
 	"Click": true, "Type": true, "Move": true, "Scroll": true,
-	"Shortcut": true, "Wait": true, "Snapshot": true,
+	"Shortcut": true, "Wait": true, "Snapshot": true, "ReconnectSession": true,
 }
 
 func controlMain(argv []string) error {
@@ -226,6 +226,8 @@ func localDesktop(ctx context.Context, name string, sess *rdpSession, proxy *age
 		return sess.snapshot(ctx, args, proxy)
 	case "Wait":
 		return waitTool(ctx, args)
+	case "ReconnectSession":
+		return sess.reconnect(ctx, args.boolOr("force", false))
 	}
 	return sess.withInput(ctx, func(in *desktopInput) (toolResult, error) {
 		switch name {

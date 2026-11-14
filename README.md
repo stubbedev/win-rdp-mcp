@@ -234,7 +234,8 @@ tool is served by the agent and the distinction disappears.
 
 **Served locally by the controller** — driven straight over RDP by the
 built-in client, **no footprint on the target**:
-`Snapshot`, `Click`, `Type`, `Move`, `Scroll`, `Shortcut`, `Wait`.
+`Snapshot`, `Click`, `Type`, `Move`, `Scroll`, `Shortcut`, `Wait`, and
+`ReconnectSession` (which re-establishes the RDP connection).
 
 > `Snapshot` returns the screenshot on its own; once the agent is up it also
 > carries the window and control list (with coordinates), so a model can aim
@@ -244,7 +245,7 @@ built-in client, **no footprint on the target**:
 tools that need Win32 (window management, OCR, recording, the annotated view):
 
 - *Desktop/Win32:* `AnnotatedSnapshot`, `FocusWindow`, `MinimizeAll`, `App`,
-  `OCR`, `ScreenRecord`, `LockScreen`, `ReconnectSession`, `GetClipboard`,
+  `OCR`, `ScreenRecord`, `LockScreen`, `GetClipboard`,
   `SetClipboard`, `Notification`, `PlaySound`
 - *System:* `Shell`, `ListProcesses`, `KillProcess`, `GetSystemInfo`,
   `ServiceList/Start/Stop`, `TaskList/Create/Delete`, `EventLog`, `RegRead`,

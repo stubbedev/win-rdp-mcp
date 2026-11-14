@@ -44,8 +44,6 @@ func newSessionSize(width, height int) (sessionSize, error) {
 	return sessionSize{width: width, height: height}, nil
 }
 
-func (s sessionSize) center() (int, int) { return s.width / 2, s.height / 2 }
-
 func withDefaultPort(target string) string {
 	if _, _, err := net.SplitHostPort(target); err == nil {
 		return target
@@ -299,17 +297,29 @@ func (s *rdpSession) lost(conn *rdpConn, cause error) {
 }
 
 func (s *rdpSession) wake(ctx context.Context) error {
-	in := s.input()
-	x, y := s.size.center()
-	if _, err := in.clickAt(x, y, pointerLeft, 1); err != nil {
-		return fmt.Errorf("waking the session: %w", err)
-	}
-	sleepCtx(ctx, 700*time.Millisecond)
-	if err := in.press(keyEnter); err != nil {
+	if err := s.input().press(keyShift); err != nil {
 		return fmt.Errorf("waking the session: %w", err)
 	}
 	sleepCtx(ctx, 3*time.Second)
 	return nil
+}
+
+var errReconnectRequested = errors.New("a reconnect was requested")
+
+func (s *rdpSession) reconnect(ctx context.Context, force bool) (toolResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn != nil && s.conn.alive() {
+		if !force {
+			return textResult("The RDP session to %s is connected; pass force to reconnect anyway", s.host), nil
+		}
+		s.lost(s.conn, errReconnectRequested)
+		s.conn.client.Close()
+	}
+	if err := s.ensureConnected(ctx); err != nil {
+		return toolResult{}, err
+	}
+	return textResult("Reconnected the RDP session to %s", s.host), nil
 }
 
 func (s *rdpSession) input() *desktopInput {

@@ -206,11 +206,11 @@
   },
   {
     "name": "ReconnectSession",
-    "description": "Reconnect a disconnected Windows desktop session to the console, so screenshots and UI automation work with no RDP client attached.",
+    "description": "Reconnect the desktop session so screenshots and UI automation work. Through the RDP controller this re-establishes the RDP connection; on a standalone agent it reattaches a disconnected session to the console.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "force": { "type": "boolean", "default": false, "description": "Reconnect even if the session appears active." }
+        "force": { "type": "boolean", "default": false, "description": "Reconnect even if the session appears connected." }
       },
       "additionalProperties": false
     }
