@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +77,63 @@ func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
 	path := writeConfig(t, "[server]\nhsot = \"typo\"\n")
 	if _, err := loadConfig(path); err == nil {
 		t.Fatal("expected an error for an unknown key")
+	}
+}
+
+func writePrivateConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := writeConfig(t, body)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoadConfigTarget(t *testing.T) {
+	path := writePrivateConfig(t, `
+[target]
+host = "192.168.1.50"
+user = "administrator"
+password = "hunter2"
+width = 1600
+`)
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Target.Host != "192.168.1.50" || cfg.Target.User != "administrator" || cfg.Target.Password != "hunter2" || cfg.Target.Width != 1600 {
+		t.Errorf("target config = %+v", cfg.Target)
+	}
+	if cfg.defined("target", "height") {
+		t.Error("an absent target key must not be reported as defined")
+	}
+}
+
+func TestLoadConfigRejectsPasswordAndPassFileTogether(t *testing.T) {
+	path := writePrivateConfig(t, "[target]\npassword = \"a\"\npass_file = \"b\"\n")
+	if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("err = %v, want a password/pass_file conflict", err)
+	}
+}
+
+func TestLoadConfigRejectsAPasswordOthersCanRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not apply on Windows")
+	}
+	path := writeConfig(t, "[target]\npassword = \"hunter2\"\n")
+	if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("err = %v, want a refusal for a world-readable password", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(path); err != nil {
+		t.Fatalf("a private config was refused: %v", err)
+	}
+}
+
+func TestTheExampleConfigLoads(t *testing.T) {
+	if _, err := loadConfig("win-rdp-mcp.example.toml"); err != nil {
+		t.Fatal(err)
 	}
 }

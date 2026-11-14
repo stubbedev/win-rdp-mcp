@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/BurntSushi/toml"
 )
@@ -34,6 +36,28 @@ type ToolsConfig struct {
 	Exclude []string `toml:"exclude"`
 }
 
+type TargetConfig struct {
+	Host     string `toml:"host"`
+	User     string `toml:"user"`
+	Domain   string `toml:"domain"`
+	Password string `toml:"password"`
+	PassFile string `toml:"pass_file"`
+	Width    int    `toml:"width"`
+	Height   int    `toml:"height"`
+	AgentExe string `toml:"agent_exe"`
+	NoAgent  bool   `toml:"no_agent"`
+}
+
+func (t TargetConfig) validate(path string, mode fs.FileMode) error {
+	if t.Password != "" && t.PassFile != "" {
+		return fmt.Errorf("config %s: set password or pass_file under [target], not both", path)
+	}
+	if t.Password != "" && runtime.GOOS != "windows" && mode.Perm()&0o077 != 0 {
+		return fmt.Errorf("config %s holds a password but other users can read it (mode %v); run chmod 600 %s", path, mode.Perm(), path)
+	}
+	return nil
+}
+
 // Config is the whole file. defined() reports whether a dotted key was actually
 // present, which is what makes "CLI flag > config file > default" precedence
 // work: a config value only wins over the default when the operator wrote it.
@@ -41,6 +65,7 @@ type Config struct {
 	Server   ServerConfig   `toml:"server"`
 	Security SecurityConfig `toml:"security"`
 	Tools    ToolsConfig    `toml:"tools"`
+	Target   TargetConfig   `toml:"target"`
 
 	SourcePath string        `toml:"-"`
 	meta       toml.MetaData `toml:"-"`
@@ -92,8 +117,9 @@ func loadConfig(path string) (*Config, error) {
 	if path == "" {
 		return cfg, nil
 	}
-	if !fileExists(path) {
-		return nil, fmt.Errorf("config file not found: %s", path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %w", err)
 	}
 	meta, err := toml.DecodeFile(path, cfg)
 	if err != nil {
@@ -101,6 +127,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if undecoded := meta.Undecoded(); len(undecoded) > 0 {
 		return nil, fmt.Errorf("config %s: unknown keys: %v", path, undecoded)
+	}
+	if err := cfg.Target.validate(path, info.Mode()); err != nil {
+		return nil, err
 	}
 	cfg.meta = meta
 	cfg.SourcePath = path

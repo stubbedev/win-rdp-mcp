@@ -24,13 +24,24 @@ var desktopTools = map[string]bool{
 	"Shortcut": true, "Wait": true, "Snapshot": true, "ReconnectSession": true,
 }
 
-func controlMain(argv []string) error {
+type controlOptions struct {
+	host, user, domain, pass string
+	size                     sessionSize
+	agentExe                 string
+	noAgent                  bool
+	debug                    bool
+	enabled                  map[string]bool
+}
+
+func parseControlOptions(argv []string) (controlOptions, error) {
 	fs := pflag.NewFlagSet("win-rdp-mcp control", pflag.ContinueOnError)
 	fs.SortFlags = false
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "win-rdp-mcp control %s — drive a Windows target over RDP, expose it as MCP\n\n"+
 			"Usage:\n  win-rdp-mcp control --target HOST --user USER [flags]\n\n"+
-			"The password comes from --pass-file or $%s. Flags:\n", Version, envTargetPass)
+			"Every setting can instead live in %s (~/.config/win-rdp-mcp/ or the current\n"+
+			"directory, or --config); a flag wins over the file. The password comes from --pass-file, $%s,\n"+
+			"or password / pass_file under [target] in the file. Flags:\n", Version, configFileName, envTargetPass)
 		fmt.Fprint(fs.Output(), fs.FlagUsages())
 	}
 
@@ -38,66 +49,96 @@ func controlMain(argv []string) error {
 		target      = fs.StringP("target", "t", "", "target host or host:port (RDP)")
 		user        = fs.StringP("user", "u", "", "RDP username")
 		domain      = fs.StringP("domain", "D", "", "RDP domain (blank for a local account)")
-		passFile    = fs.StringP("pass-file", "p", "", "file holding the RDP password (else $"+envTargetPass+")")
+		passFile    = fs.StringP("pass-file", "p", "", "file holding the RDP password (else $"+envTargetPass+", else the config file)")
 		width       = fs.IntP("width", "W", 1280, "session width in pixels")
 		height      = fs.IntP("height", "H", 800, "session height in pixels")
 		agentExe    = fs.String("agent-exe", "", "path to the Windows agent binary to push (default: win-rdp-mcp.exe next to this binary, else ./win-rdp-mcp.exe)")
 		noAgent     = fs.Bool("no-agent", false, "desktop tools only; do not push the in-session agent")
+		configPath  = fs.StringP("config", "c", "", "path to "+configFileName)
 		debug       = fs.BoolP("debug", "d", false, "log RDP and bootstrap detail to stderr")
 		enableAll   = fs.BoolP("enable-all", "a", false, "enable every tool, including destructive tier 3")
 		enableTier3 = fs.BoolP("enable-tier3", "3", false, "enable the destructive tier 3 tools")
 		disableT2   = fs.BoolP("disable-tier2", "2", false, "disable the interactive tier 2 tools")
 	)
 	if err := fs.Parse(argv); err != nil {
-		if errors.Is(err, pflag.ErrHelp) {
-			return nil
-		}
-		return err
+		return controlOptions{}, err
+	}
+	explicit := map[string]bool{}
+	fs.Visit(func(f *pflag.Flag) { explicit[f.Name] = true })
+
+	cfg, err := loadConfig(discoverConfigPath(*configPath))
+	if err != nil {
+		return controlOptions{}, err
+	}
+	t := cfg.Target
+	inFile := func(key string) bool { return cfg.defined("target", key) }
+
+	opts := controlOptions{
+		host:     pick(inFile("host"), t.Host, "", explicit["target"], *target),
+		user:     pick(inFile("user"), t.User, "", explicit["user"], *user),
+		domain:   pick(inFile("domain"), t.Domain, "", explicit["domain"], *domain),
+		agentExe: pick(inFile("agent_exe"), expandUser(t.AgentExe), "", explicit["agent-exe"], *agentExe),
+		noAgent:  pickBool(inFile("no_agent"), t.NoAgent, explicit["no-agent"], *noAgent),
+		debug:    *debug,
+	}
+	if opts.host == "" || opts.user == "" {
+		return controlOptions{}, fmt.Errorf("no target: pass --target and --user, or set host and user under [target] in ~/.config/win-rdp-mcp/%s", configFileName)
+	}
+	if opts.pass, err = resolvePassword(*passFile, t); err != nil {
+		return controlOptions{}, err
 	}
 
-	pass, err := resolvePassword(*passFile)
-	if err != nil {
-		return err
+	w, h := *width, *height
+	if inFile("width") && !explicit["width"] {
+		w = t.Width
 	}
-	if *target == "" || *user == "" {
-		fs.Usage()
-		return fmt.Errorf("both --target and --user are required")
+	if inFile("height") && !explicit["height"] {
+		h = t.Height
 	}
-	size, err := newSessionSize(*width, *height)
-	if err != nil {
-		return err
+	if opts.size, err = newSessionSize(w, h); err != nil {
+		return controlOptions{}, err
 	}
 
-	enabled, err := resolveEnabledTools(toolSelection{
-		enableTier3:  *enableTier3,
-		disableTier2: *disableT2,
+	opts.enabled, err = resolveEnabledTools(toolSelection{
+		enableTier3:  pickBool(cfg.defined("security", "enable_tier3"), cfg.Security.EnableTier3, explicit["enable-tier3"], *enableTier3),
+		disableTier2: pickBool(cfg.defined("security", "disable_tier2"), cfg.Security.DisableTier2, explicit["disable-tier2"], *disableT2),
 		enableAll:    *enableAll,
+		explicit:     cfg.Tools.Enable,
+		exclude:      cfg.Tools.Exclude,
 	})
+	return opts, err
+}
+
+func controlMain(argv []string) error {
+	opts, err := parseControlOptions(argv)
+	if errors.Is(err, pflag.ErrHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: rdpLogLevel(*debug)})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: rdpLogLevel(opts.debug)})))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	sess := &rdpSession{
-		host: withDefaultPort(*target), user: *user, domain: *domain, pass: pass,
-		size: size, debug: *debug, life: ctx,
+		host: withDefaultPort(opts.host), user: opts.user, domain: opts.domain, pass: opts.pass,
+		size: opts.size, debug: opts.debug, life: ctx,
 	}
 	defer sess.stop()
 
 	var proxy *agentProxy
-	if !*noAgent {
-		exe := *agentExe
+	if !opts.noAgent {
+		exe := opts.agentExe
 		if exe == "" {
 			exe = defaultAgentExe()
 		}
 		if err := checkAgentExe(exe); err != nil {
 			return err
 		}
-		proxy, err = newAgentProxy(sess, exe, enabled)
+		proxy, err = newAgentProxy(sess, exe, opts.enabled)
 		if err != nil {
 			return err
 		}
@@ -112,14 +153,14 @@ func controlMain(argv []string) error {
 
 	srv := mcp.NewServer(
 		&mcp.Implementation{Name: "win-rdp-mcp-control", Version: Version},
-		&mcp.ServerOptions{Instructions: controllerInstructions(*noAgent)},
+		&mcp.ServerOptions{Instructions: controllerInstructions(opts.noAgent)},
 	)
-	if err := registerControllerTools(srv, enabled, sess, proxy); err != nil {
+	if err := registerControllerTools(srv, opts.enabled, sess, proxy); err != nil {
 		return err
 	}
 
 	logf("controller ready — %d tools (%d desktop-local, rest via agent); RDP connects to %s on the first tool call",
-		len(enabled), countLocal(enabled), sess.host)
+		len(opts.enabled), countLocal(opts.enabled), sess.host)
 	if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
 		return err
 	}
@@ -135,18 +176,26 @@ func rdpLogLevel(debug bool) slog.Level {
 
 const envTargetPass = "WIN_RDP_TARGET_PASS"
 
-func resolvePassword(passFile string) (string, error) {
-	if passFile != "" {
-		data, err := os.ReadFile(passFile)
-		if err != nil {
-			return "", fmt.Errorf("reading --pass-file: %w", err)
-		}
-		return strings.TrimRight(string(data), "\r\n"), nil
+func resolvePassword(flagFile string, t TargetConfig) (string, error) {
+	switch {
+	case flagFile != "":
+		return readPasswordFile(flagFile)
+	case os.Getenv(envTargetPass) != "":
+		return os.Getenv(envTargetPass), nil
+	case t.Password != "":
+		return t.Password, nil
+	case t.PassFile != "":
+		return readPasswordFile(expandUser(t.PassFile))
 	}
-	if p := os.Getenv(envTargetPass); p != "" {
-		return p, nil
+	return "", fmt.Errorf("no password: pass --pass-file, set $%s, or set password or pass_file under [target] in %s", envTargetPass, configFileName)
+}
+
+func readPasswordFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading the RDP password file: %w", err)
 	}
-	return "", fmt.Errorf("no password: set $%s or pass --pass-file", envTargetPass)
+	return strings.TrimRight(string(data), "\r\n"), nil
 }
 
 func defaultAgentExe() string {
