@@ -269,8 +269,11 @@ func controllerInstructions(noAgent bool) string {
 	w("")
 	w("- Start with `Snapshot` to see the screen. Coordinates are screen pixels at the session resolution.")
 	w("- `Click`, `Type`, `Move`, `Scroll`, `Shortcut` drive the desktop with no footprint on the target.")
+	w("- `Snapshot` waits for the screen to settle after your last action, so no `Wait` is needed between an action and a `Snapshot`.")
+	w("- `Type` sends real key presses. Apps with autocomplete or text suggestions can still change what lands; check with `Snapshot` when it matters.")
+	w("- If another client takes the session, the next call reconnects on its own; `ReconnectSession` with `force` reconnects on demand.")
 	if !noAgent {
-		w("- The window/element list, `Shell`, files, registry, services and the rest come from an agent pushed into the session over RDP. It may take a few seconds after startup before those answer.")
+		w("- The window/element list, `Shell`, files, registry, services and the rest come from an agent pushed into the session over RDP. The first such call takes about ten seconds while it starts; if it dies it is relaunched on the next call.")
 	} else {
 		w("- Running with --no-agent: only the desktop tools above are available.")
 	}
