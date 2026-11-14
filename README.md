@@ -57,21 +57,68 @@ install it — see [Running the agent directly](#running-the-agent-directly).
 
 ## Quickstart
 
-On your machine (Linux, macOS or Windows):
+On your machine (Linux, macOS or Windows), describe the target once in
+`~/.config/win-rdp-mcp/win-rdp-mcp.toml`:
 
-```sh
-nix run github:stubbedev/win-rdp-mcp -- control \
-  --target 192.168.1.50 --user administrator
-
-# the password comes from the environment (kept out of your shell history/args)
-export WIN_RDP_TARGET_PASS='...'
+```toml
+[target]
+host = "192.168.1.50"
+user = "administrator"
+password = "..."        # or pass_file = "~/.config/win-rdp-mcp/target.pass"
 ```
 
-That starts an MCP server on stdio. Point your client at it (below). The RDP
+```sh
+chmod 600 ~/.config/win-rdp-mcp/win-rdp-mcp.toml   # a readable password is refused
+npx -y @stubbedev/win-rdp-mcp control
+```
+
+Or skip the file and use flags:
+
+```sh
+export WIN_RDP_TARGET_PASS='...'   # kept out of your shell history and argv
+npx -y @stubbedev/win-rdp-mcp control --target 192.168.1.50 --user administrator
+```
+
+Either way, that starts an MCP server on stdio. Point your client at it (below). The RDP
 session opens on the first tool call, and reopens on its own if it drops —
 Windows gives a user one session, so another client logging in as the same user
 takes it. The first system-tool call waits a few seconds while the agent
 bootstraps; the desktop tools work immediately.
+
+### Configuration
+
+Every controller setting can come from a flag, from the config file, or both. A
+flag always wins over the file. The file is the first of:
+
+1. the path given to `--config` / `-c`
+2. `win-rdp-mcp.toml` in the current directory
+3. `~/.config/win-rdp-mcp/win-rdp-mcp.toml` (on Windows,
+   `%USERPROFILE%\.config\win-rdp-mcp\win-rdp-mcp.toml`)
+
+The controller reads the `[target]` table for the connection, and `[security]`
+and `[tools]` for which tools to expose:
+
+```toml
+[target]
+host = "192.168.1.50"   # host or host:port; the port defaults to 3389
+user = "administrator"
+domain = "CORP"         # leave out for a local account
+pass_file = "~/.config/win-rdp-mcp/target.pass"
+width = 1600            # session size, default 1280x800
+height = 900
+
+[security]
+enable_tier3 = true     # Shell, file writes, registry writes, ...
+
+[tools]
+exclude = ["ScreenRecord"]
+```
+
+The password is looked up in this order: `--pass-file`, then
+`$WIN_RDP_TARGET_PASS`, then `password` or `pass_file` under `[target]`. An
+inline `password` is refused unless the file is `chmod 600`. Unknown keys are an
+error, so a typo fails loudly instead of being ignored.
+[`win-rdp-mcp.example.toml`](win-rdp-mcp.example.toml) lists every key.
 
 ### Requirements
 
@@ -96,26 +143,45 @@ machine, not the target.
 
 ### Claude Code / Claude Desktop
 
+With the target in the [config file](#configuration), the client entry carries
+no connection details or secrets:
+
 ```json
 {
   "mcpServers": {
     "windows": {
-      "command": "win-rdp-mcp",
-      "args": ["control", "--target", "192.168.1.50", "--user", "administrator"],
-      "env": { "WIN_RDP_TARGET_PASS": "your-password" }
+      "command": "npx",
+      "args": ["-y", "@stubbedev/win-rdp-mcp", "control"]
     }
   }
 }
 ```
 
-Or, without installing anything, use the Nix runner as the command:
+In Claude Code that is one line:
+
+```sh
+claude mcp add windows -s user -- npx -y @stubbedev/win-rdp-mcp control
+```
+
+Swap `npx -y @stubbedev/win-rdp-mcp` for `win-rdp-mcp` if the binary is on
+your `PATH`, or for `nix run github:stubbedev/win-rdp-mcp --`.
+
+To drive several machines, give each its own file and entry:
+
+```json
+"args": ["-y", "@stubbedev/win-rdp-mcp", "control",
+         "--config", "/home/you/.config/win-rdp-mcp/lab.toml"]
+```
+
+Without a config file, put everything in the arguments and the password in the
+environment:
 
 ```json
 {
   "mcpServers": {
     "windows": {
-      "command": "nix",
-      "args": ["run", "github:stubbedev/win-rdp-mcp", "--", "control",
+      "command": "npx",
+      "args": ["-y", "@stubbedev/win-rdp-mcp", "control",
                "--target", "192.168.1.50", "--user", "administrator"],
       "env": { "WIN_RDP_TARGET_PASS": "your-password" }
     }
@@ -123,30 +189,23 @@ Or, without installing anything, use the Nix runner as the command:
 }
 ```
 
-To keep the password out of the client config, drop the `env` and point
-`--pass-file` at a `chmod 600` file instead:
-
-```json
-"args": ["control", "--target", "192.168.1.50", "--user", "administrator",
-         "--pass-file", "/home/you/.config/win-rdp-mcp/target.pass"]
-```
-
-In Claude Code you can do all of this in one line:
-
-```sh
-claude mcp add win-rdp -s user -- \
-  win-rdp-mcp control --target 192.168.1.50 --user administrator \
-  --pass-file ~/.config/win-rdp-mcp/target.pass
-```
-
 ---
 
 ## Install
 
-### Nix (recommended — bundles the runtime tools)
+### npm / npx
 
 ```sh
-nix run github:stubbedev/win-rdp-mcp -- control --target ... --user ...
+npx -y @stubbedev/win-rdp-mcp control
+```
+
+Downloads the prebuilt binary for your platform on first run, and for `control`
+also the Windows agent it pushes into the session.
+
+### Nix
+
+```sh
+nix run github:stubbedev/win-rdp-mcp -- control
 nix profile install github:stubbedev/win-rdp-mcp
 ```
 
@@ -165,49 +224,50 @@ go install github.com/stubbedev/win-rdp-mcp@latest
 GOOS=windows GOARCH=amd64 go build -o win-rdp-mcp.exe github.com/stubbedev/win-rdp-mcp  # the agent to push
 ```
 
-### npm / npx
+### Release binaries
 
-```sh
-npx -y @stubbedev/win-rdp-mcp control --target ... --user ...
-```
-
-Downloads the prebuilt binary for your platform on first run, and for `control`
-also the Windows agent it pushes into the session.
+Every [release](https://github.com/stubbedev/win-rdp-mcp/releases) carries
+binaries for Linux, macOS and Windows, and `.mcpb` bundles for one-click Claude
+Desktop install of the standalone agent.
 
 > Everything builds and tests on Linux, macOS and Windows — that is how CI checks
 > it. The **controller runs anywhere**; the **agent binary is for Windows**, and
 > the controller looks for it as `win-rdp-mcp.exe` next to itself (or pass
-> `--agent-exe`).
+> `--agent-exe` / `agent_exe`). The npm and Nix packages ship it there.
 
 ---
 
 ## Flags
 
 GNU-style: every option has a `--long` form; the common ones a `-short` alias.
+The right-hand column is the matching config-file key.
 
 ### Controller (`win-rdp-mcp control`)
 
 ```
--t, --target HOST[:PORT]   target RDP host (required)
--u, --user NAME            RDP username (required)
--D, --domain NAME          RDP domain (blank for a local account)
--p, --pass-file PATH       file holding the password (else $WIN_RDP_TARGET_PASS)
--W, --width N              session width  (default 1280)
--H, --height N             session height (default 800)
-    --agent-exe PATH       Windows agent to push (default ./win-rdp-mcp.exe)
-    --no-agent             desktop tools only; don't push the in-session agent
+-t, --target HOST[:PORT]   target RDP host (required)           [target] host
+-u, --user NAME            RDP username (required)              [target] user
+-D, --domain NAME          RDP domain (blank for local account) [target] domain
+-p, --pass-file PATH       file holding the password            [target] pass_file / password
+-W, --width N              session width  (default 1280)        [target] width
+-H, --height N             session height (default 800)         [target] height
+    --agent-exe PATH       Windows agent to push                [target] agent_exe
+                           (default: win-rdp-mcp.exe next to this binary, else ./win-rdp-mcp.exe)
+    --no-agent             desktop tools only; no agent          [target] no_agent
+-c, --config PATH          config file (default: see Configuration)
 -d, --debug                log RDP + bootstrap detail
 -a, --enable-all           enable every tool, including destructive tier 3
--3, --enable-tier3         enable the destructive tier 3 tools
--2, --disable-tier2        disable the interactive tier 2 tools
+-3, --enable-tier3         enable the destructive tier 3 tools  [security] enable_tier3
+-2, --disable-tier2        disable the interactive tier 2 tools [security] disable_tier2
+                                                                [tools] enable / exclude
 ```
 
 ### Agent (`win-rdp-mcp`, runs on the target)
 
 ```
--t, --transport stdio|streamable-http|rdpvc default streamable-http
-    --token HEX                             session token for --transport rdpvc
+-t, --transport stdio|streamable-http|rdpvc default streamable-http (rdpvc is set by the controller)
 -H, --host / -p, --port                     bind address (default 127.0.0.1:8090)
+-c, --config PATH                           config file ([server], [security], [tools])
 -k, --auth-key KEY                          also $WIN_RDP_MCP_AUTH_KEY
     --allow-insecure-remote                 non-loopback bind with no auth (danger)
     --ssl-certfile / --ssl-keyfile          enable HTTPS
@@ -237,11 +297,15 @@ built-in client, **no footprint on the target**:
 `Snapshot`, `Click`, `Type`, `Move`, `Scroll`, `Shortcut`, `Wait`, and
 `ReconnectSession` (which re-establishes the RDP connection).
 
-> `Snapshot` returns the screenshot on its own; once the agent is up it also
-> carries the window list and the foreground window's controls, read through
-> UI Automation (named buttons, fields, menu items, list items). `Click` takes
-> `element=N` from that list, so a model can aim by control rather than by
-> guessing pixels.
+> `Snapshot` returns the screenshot on its own (or a `left`/`top`/`right`/`bottom`
+> region of it); once the agent is up it also carries the window list and the
+> foreground window's controls, read through UI Automation (named buttons,
+> fields, menu items, list items). `Click` takes `element=N` from that list, so
+> a model can aim by control rather than by guessing pixels.
+>
+> `Type` pastes long single-line text in one go and restores the clipboard
+> afterwards; `FileUpload` and `FileDownload` take a `local_path` on your
+> machine and move files of any size through the redirected drive.
 
 **Served by the in-session agent** — everything else, including the desktop
 tools that need Win32 (window management, OCR, recording, the annotated view):
@@ -255,8 +319,8 @@ tools that need Win32 (window management, OCR, recording, the annotated view):
 - *Network:* `Ping`, `PortCheck`, `NetConnections`, `Scrape`
 - *Tasks:* `GetTaskStatus`, `GetRunningTasks`, `CancelTask`
 
-The first agent-served call after connect waits ~10s while the agent starts in
-the session; the locally-served tools work immediately.
+The first agent-served call after connect waits a few seconds while the agent
+starts in the session; the locally-served tools work immediately.
 
 ---
 
@@ -280,8 +344,10 @@ The tier chosen on the controller is reproduced on the pushed agent.
 
 ### Credentials
 
-Pass the RDP password by `--pass-file` or `$WIN_RDP_TARGET_PASS`, never on the
-command line (argv is world-readable via `ps`).
+Pass the RDP password by `--pass-file`, `$WIN_RDP_TARGET_PASS` or the config
+file, never on the command line (argv is world-readable via `ps`). There is no
+password flag. A config file holding an inline `password` must be `chmod 600`,
+or the controller refuses to start.
 
 ### Other guards
 
@@ -331,7 +397,7 @@ controller entirely.
 ## Development
 
 ```sh
-nix develop        # Go 1.27, gopls, staticcheck, just, node (for the npm wrapper)
+nix develop        # Go 1.27, gopls, staticcheck, delve, just, node (for the npm wrapper)
 just               # list every recipe
 ```
 
@@ -351,14 +417,16 @@ just               # list every recipe
 
 | File | Holds |
 |------|-------|
-| `controller.go` | the controller: flags, MCP registration and routing |
-| `controller_session.go` | the RDP session: connect/reconnect, framebuffer, disconnect reasons |
+| `controller.go` | the controller: flags and config, MCP registration and routing |
+| `controller_session.go` | the RDP session: connect/reconnect, framebuffer, clipboard, disconnect reasons |
 | `controller_input.go` | the desktop tools as RDP keyboard/mouse input |
-| `controller_agent.go` | pushing the agent into the session, the file-RPC client |
+| `controller_agent.go` | launching the agent in the session, the RPC client, file transfers |
+| `screendiff.go` | framebuffer diffs that confirm the Run dialog is up before the agent command runs |
 | `keys.go` | the key table shared by the controller (scancodes) and agent (virtual keys) |
+| `elements.go` / `uia_windows.go` | the UI Automation element list behind `Snapshot` and `Click element=N` |
 | `sysadmin*.go` | services, scheduled tasks, event log and ping via Win32/COM |
-| `internal/grdp` | the RDP client, vendored from [nakagami/grdp](https://github.com/nakagami/grdp) v0.9.12 (GPL-3.0) with audio and cgo stripped and hooks added for drive redirection, direct input and clipboard paste |
-| `internal/rdpdr` | the redirected drive (MS-RDPEFS) that carries the agent and its RPC |
+| `internal/grdp` | the RDP client, vendored from [nakagami/grdp](https://github.com/nakagami/grdp) v0.9.12 (GPL-3.0) with audio and cgo stripped and hooks added for drive redirection, dynamic virtual channels, direct input and clipboard paste |
+| `internal/rdpdr` | the redirected drive (MS-RDPEFS) that carries the agent binary and file transfers |
 | `rpc.go` | the controller↔agent protocol: framed JSON calls over the virtual channel |
 | `agent_channel*.go` | the agent side of the virtual channel, and its self-relocation |
 | `tools.json` / `tools.go` | tool schemas + agent registration/dispatch |
@@ -374,6 +442,9 @@ just               # list every recipe
 - **Flake** — recomputes `vendorHash` on any Go change and commits it, builds
   the flake, runs `nix flake check`, pushes the closure to the cache.
 - **Flake update** — weekly `nix flake update`, committed only if it still builds.
+- **security** — CodeQL for Go and Actions plus a Grype vulnerability scan, on every push and nightly.
+- **Publish** — on a version tag: release binaries, `.mcpb` bundles and the npm
+  package with provenance.
 - **Dependabot** — weekly Go and Actions updates, auto-merged once green.
 
 ---
