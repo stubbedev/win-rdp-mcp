@@ -93,6 +93,9 @@ func controlMain(argv []string) error {
 		if exe == "" {
 			exe = defaultAgentExe()
 		}
+		if err := checkAgentExe(exe); err != nil {
+			return err
+		}
 		proxy, err = newAgentProxy(sess, exe, enabled)
 		if err != nil {
 			return err
@@ -153,6 +156,17 @@ func defaultAgentExe() string {
 		}
 	}
 	return "win-rdp-mcp.exe"
+}
+
+func checkAgentExe(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("the Windows agent to push was not found at %s: %w (build it with `just build-windows`, pass --agent-exe, or run with --no-agent for desktop tools only)", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("the Windows agent path %s is not a regular file", path)
+	}
+	return nil
 }
 
 func countLocal(enabled map[string]bool) int {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -375,5 +377,22 @@ func TestWaitPaintAfterSeesOnlyNewPaints(t *testing.T) {
 	}()
 	if !conn.waitPaintAfter(context.Background(), before, time.Second) {
 		t.Fatal("a fresh paint was not seen")
+	}
+}
+
+func TestCheckAgentExe(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "win-rdp-mcp.exe")
+	if err := checkAgentExe(exe); err == nil || !strings.Contains(err.Error(), "--no-agent") {
+		t.Fatalf("a missing agent gave %v, want an error naming the way out", err)
+	}
+	if err := os.WriteFile(exe, []byte("MZ"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkAgentExe(exe); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkAgentExe(dir); err == nil {
+		t.Fatal("a directory was accepted as the agent")
 	}
 }

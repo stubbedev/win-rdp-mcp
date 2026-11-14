@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -337,10 +336,7 @@ func (p *agentProxy) launch(ctx context.Context, dismissLeftovers bool) error {
 	}
 	dst := filepath.Join(p.session.workdir, agentExeName)
 	if err := copyFile(p.agentExe, dst); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("agent binary not found at %s (build it with `just build-windows`, or pass --agent-exe)", p.agentExe)
-		}
-		return fmt.Errorf("staging the agent onto the redirected drive: %w", err)
+		return fmt.Errorf("staging the agent %s onto the redirected drive: %w", p.agentExe, err)
 	}
 
 	launch := p.launchCommand()
