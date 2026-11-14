@@ -99,3 +99,26 @@ func TestCloseNotifiesAndStopsSends(t *testing.T) {
 		t.Fatal("send on a closed channel succeeded")
 	}
 }
+
+type factory struct{ made []*recorder }
+
+func (f *factory) Process([]byte) {}
+func (f *factory) NewChannelHandler() DvcChannelHandler {
+	r := &recorder{}
+	f.made = append(f.made, r)
+	return r
+}
+
+func TestFactoryGivesEachInstanceItsOwnHandler(t *testing.T) {
+	c := NewDvcClient()
+	c.Sender(&pduSink{})
+	f := &factory{}
+	c.RegisterHandler("Multi", f)
+	c.Process(append([]byte{DYNVC_CREATE_REQ << 4, 1}, "Multi\x00"...))
+	c.Process(append([]byte{DYNVC_CREATE_REQ << 4, 2}, "Multi\x00"...))
+	c.Process([]byte{DYNVC_DATA << 4, 2, 'b'})
+	c.Process([]byte{DYNVC_DATA << 4, 1, 'a'})
+	if len(f.made) != 2 || string(f.made[0].got[0]) != "a" || string(f.made[1].got[0]) != "b" {
+		t.Fatalf("instances did not get their own data: %+v", f.made)
+	}
+}

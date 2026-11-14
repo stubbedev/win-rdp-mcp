@@ -41,6 +41,14 @@ type DvcChannelHandler interface {
 	Process(data []byte)
 }
 
+// DvcChannelFactory, when registered in place of a handler, is asked for a
+// fresh handler for every channel instance the server creates under its
+// name, so concurrent instances keep separate state.
+type DvcChannelFactory interface {
+	DvcChannelHandler
+	NewChannelHandler() DvcChannelHandler
+}
+
 type ChannelClient struct {
 	name          string
 	id            uint32
@@ -255,6 +263,9 @@ func (c *DvcClient) processCreateReq(hdr *DvcHeader, s []byte) channelCreator {
 	var handler DvcChannelHandler
 	if h, ok := c.handlers[channelName]; ok {
 		handler = h
+		if factory, ok := h.(DvcChannelFactory); ok {
+			handler = factory.NewChannelHandler()
+		}
 		info := &dvcChannelInfo{
 			name:    channelName,
 			id:      channelId,
