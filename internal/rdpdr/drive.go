@@ -2,6 +2,7 @@ package rdpdr
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -77,6 +78,19 @@ type Drive struct {
 	announced   bool
 	nextFileID  uint32
 	files       map[uint32]*openFile
+	accepted    chan struct{}
+}
+
+func (d *Drive) WaitAccepted(ctx context.Context) error {
+	d.mu.Lock()
+	accepted := d.accepted
+	d.mu.Unlock()
+	select {
+	case <-accepted:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func NewDrive(name, dir string) (*Drive, error) {
@@ -92,7 +106,7 @@ func NewDrive(name, dir string) (*Drive, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening redirected drive directory %s: %w", dir, err)
 	}
-	return &Drive{name: name, dir: dir, root: root, files: map[uint32]*openFile{}}, nil
+	return &Drive{name: name, dir: dir, root: root, files: map[uint32]*openFile{}, accepted: make(chan struct{})}, nil
 }
 
 func (d *Drive) Close() error {
@@ -119,6 +133,10 @@ func (d *Drive) Process(data []byte) {
 	if err := d.processLocked(data); err != nil {
 		slog.Warn("rdpdr: dropping server packet", "err", err)
 	}
+}
+
+func unsupported(what string, req ioRequest, detail uint32) {
+	slog.Info("rdpdr: unsupported request", "what", what, "major", req.major, "minor", req.minor, "class", detail)
 }
 
 func (d *Drive) send(w writer) error {
@@ -173,6 +191,11 @@ func (d *Drive) onServerAnnounce(r *reader) error {
 	d.closeAllLocked()
 	d.serverMinor = minor
 	d.announced = false
+	select {
+	case <-d.accepted:
+		d.accepted = make(chan struct{})
+	default:
+	}
 
 	confirm := header(componentCore, packetClientIDConfirm)
 	confirm.u16(1)
@@ -242,6 +265,11 @@ func (d *Drive) onDeviceReply(r *reader) error {
 	if result != 0 {
 		return fmt.Errorf("server rejected redirected drive %q (device %d): status 0x%08x", d.name, deviceID, result)
 	}
+	select {
+	case <-d.accepted:
+	default:
+		close(d.accepted)
+	}
 	return nil
 }
 
@@ -295,6 +323,7 @@ func (d *Drive) onIORequest(r *reader) error {
 			return nil
 		}
 		if req.minor != minorQueryDirectory {
+			unsupported("directory control", req, 0)
 			resp = req.reply(statusNotSupported)
 			resp.u32(0)
 			break
@@ -307,6 +336,7 @@ func (d *Drive) onIORequest(r *reader) error {
 		resp = req.reply(statusSuccess)
 		resp.zeros(5)
 	default:
+		unsupported("major function", req, 0)
 		resp = req.reply(statusNotSupported)
 	}
 	if err != nil {
@@ -627,6 +657,7 @@ func (d *Drive) queryInformation(req ioRequest, r *reader) (writer, error) {
 		body.u32(attributes(fi))
 		body.u32(0)
 	default:
+		unsupported("query information", req, class)
 		resp := req.reply(statusInvalidInfoClass)
 		resp.u32(0)
 		return resp, nil
@@ -687,6 +718,7 @@ func (d *Drive) setInformation(req ioRequest, r *reader) (writer, error) {
 		}
 		return reply(f.rename(target, replace)), nil
 	}
+	unsupported("set information", req, class)
 	return reply(statusInvalidInfoClass), nil
 }
 
@@ -747,6 +779,7 @@ func (d *Drive) queryVolume(req ioRequest, r *reader) (writer, error) {
 		body.u32(fileDeviceDisk)
 		body.u32(0)
 	default:
+		unsupported("query volume", req, class)
 		resp := req.reply(statusInvalidInfoClass)
 		resp.u32(0)
 		return resp, nil
@@ -778,6 +811,7 @@ func (d *Drive) queryDirectory(req ioRequest, r *reader) (writer, error) {
 	}
 	if !slices.Contains([]uint32{fileDirectoryInformation, fileFullDirectoryInformation,
 		fileBothDirectoryInformation, fileNamesInformation}, class) {
+		unsupported("query directory", req, class)
 		return empty(statusInvalidInfoClass), nil
 	}
 	if initial {

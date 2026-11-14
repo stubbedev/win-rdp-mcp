@@ -13,17 +13,21 @@ import (
 	"time"
 
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp"
+	"github.com/stubbedev/win-rdp-mcp/internal/grdp/plugin/cliprdr"
+	"github.com/stubbedev/win-rdp-mcp/internal/grdp/plugin/drdynvc"
 	"github.com/stubbedev/win-rdp-mcp/internal/rdpdr"
 )
 
 const (
-	defaultRDPPort   = "3389"
-	dialTimeout      = 15 * time.Second
-	reconnectSettle  = 2 * time.Second
-	clipboardAckWait = 5 * time.Second
-	driveName        = "mcp"
-	minSessionSide   = 200
-	maxSessionSide   = 8192
+	defaultRDPPort      = "3389"
+	dialTimeout         = 15 * time.Second
+	reconnectSettle     = 2 * time.Second
+	clipboardAckWait    = 5 * time.Second
+	clipboardOfferTries = 5
+	clipboardOfferPause = time.Second
+	driveName           = "mcp"
+	minSessionSide      = 200
+	maxSessionSide      = 8192
 )
 
 type sessionSize struct{ width, height int }
@@ -56,6 +60,7 @@ type rdpSession struct {
 
 	life           context.Context
 	onFirstConnect func(context.Context)
+	agentChannel   drdynvc.DvcChannelHandler
 
 	workdir   string
 	drive     *rdpdr.Drive
@@ -87,7 +92,23 @@ func (c *rdpConn) clipboardText() string {
 	return ""
 }
 
+var errClipboardRefused = errors.New("the session refused the clipboard offer")
+
 func (c *rdpConn) offerClipboard(ctx context.Context, text string) error {
+	var err error
+	for try := range clipboardOfferTries {
+		if try > 0 && !sleepCtx(ctx, clipboardOfferPause) {
+			return ctx.Err()
+		}
+		err = c.offerClipboardOnce(ctx, text)
+		if !errors.Is(err, errClipboardRefused) && !errors.Is(err, cliprdr.ErrClipboardNotReady) {
+			return err
+		}
+	}
+	return fmt.Errorf("%w %d times (is clipboard redirection disabled on the target?)", err, clipboardOfferTries)
+}
+
+func (c *rdpConn) offerClipboardOnce(ctx context.Context, text string) error {
 	c.clipboard.Store(&text)
 	ack, err := c.client.AnnounceClipboard()
 	if err != nil {
@@ -98,7 +119,7 @@ func (c *rdpConn) offerClipboard(ctx context.Context, text string) error {
 	select {
 	case accepted := <-ack:
 		if !accepted {
-			return errors.New("the session refused the clipboard offer")
+			return errClipboardRefused
 		}
 		return nil
 	case <-timer.C:
@@ -239,6 +260,9 @@ func (s *rdpSession) connect() (*rdpConn, error) {
 		done:   make(chan struct{}),
 	}
 	client.SetDeviceRedirection(s.drive)
+	if s.agentChannel != nil {
+		client.RegisterDynamicChannel(agentChannelName, s.agentChannel)
+	}
 	client.OnBitmap(conn.paint)
 	client.OnClipboard(nil, conn.clipboardText)
 	client.OnError(func(err error) { conn.end(err) })

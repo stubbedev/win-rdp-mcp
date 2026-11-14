@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"image"
+	"os/exec"
 	"time"
 )
 
@@ -52,3 +53,5 @@ func listTasks() ([]scheduledTask, error)                    { return nil, errWi
 func createTask(string, commandLine, taskTrigger) error      { return errWindowsOnly }
 func deleteTask(string) error                                { return errWindowsOnly }
 func readEventLog(string, uint8, int) ([]eventRecord, error) { return nil, errWindowsOnly }
+
+func hideChildConsole(*exec.Cmd) {}

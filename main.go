@@ -66,6 +66,15 @@ func run(argv []string) error {
 		}
 		return err
 	}
+	if opts.transport == "rdpvc" {
+		moved, err := relocateAgent(argv)
+		if err != nil {
+			return err
+		}
+		if moved {
+			return nil
+		}
+	}
 	return serve(opts)
 }
 
@@ -73,7 +82,7 @@ func run(argv []string) error {
 
 type options struct {
 	transport string
-	dir       string // exchange directory for -transport dir
+	token     string
 	host      string
 	port      int
 	debug     bool
@@ -120,8 +129,8 @@ func parseOptions(argv []string) (options, error) {
 	}
 
 	var (
-		transport           = fs.StringP("transport", "t", "streamable-http", "transport: stdio, streamable-http, or dir")
-		dir                 = fs.String("dir", "", "for --transport dir: the exchange directory (the controller's redirected drive)")
+		transport           = fs.StringP("transport", "t", "streamable-http", "transport: stdio, streamable-http, or rdpvc")
+		token               = fs.String("token", "", "for --transport rdpvc: the controller's session token")
 		host                = fs.StringP("host", "H", "127.0.0.1", "bind address (0.0.0.0 exposes the server to the network)")
 		port                = fs.IntP("port", "p", 8090, "bind port")
 		debug               = fs.BoolP("debug", "d", false, "log every request")
@@ -154,7 +163,7 @@ func parseOptions(argv []string) (options, error) {
 
 	opts := options{
 		transport:  *transport,
-		dir:        *dir,
+		token:      *token,
 		host:       *host,
 		port:       *port,
 		debug:      *debug,
@@ -250,16 +259,16 @@ func pickBool(configSet, configValue, flagSet, flagValue bool) bool {
 func validateOptions(opts options) error {
 	switch opts.transport {
 	case "stdio", "streamable-http":
-	case "dir":
-		// The dir transport is reached only through the controller's redirected
-		// drive, which is scoped to the authenticated RDP session — there is no
-		// listener to gate, so the network rules below do not apply.
-		if opts.dir == "" {
-			return errors.New("-transport dir requires -dir <exchange directory>")
+	case "rdpvc":
+		// The rdpvc transport is a virtual channel inside the controller's
+		// authenticated RDP session — there is no listener to gate, so the
+		// network rules below do not apply.
+		if !validAgentToken(opts.token) {
+			return fmt.Errorf("--transport rdpvc requires --token <%d hex characters>", agentTokenBytes*2)
 		}
 		return nil
 	default:
-		return fmt.Errorf("unknown transport %q (use stdio, streamable-http, or dir)", opts.transport)
+		return fmt.Errorf("unknown transport %q (use stdio, streamable-http, or rdpvc)", opts.transport)
 	}
 
 	if (opts.oauthClientID == "") != (opts.oauthClientSecret == "") {
@@ -299,11 +308,8 @@ func serve(opts options) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// The dir transport is a plain file request/response loop, not an MCP
-	// server — it reuses the handlers directly (see dirserve.go), so it skips
-	// the mcp.Server setup entirely.
-	if opts.transport == "dir" {
-		return serveDir(ctx, opts.dir, opts.enabled)
+	if opts.transport == "rdpvc" {
+		return runAgentChannel(ctx, opts.token, opts.enabled)
 	}
 
 	srv := mcp.NewServer(

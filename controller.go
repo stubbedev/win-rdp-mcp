@@ -97,9 +97,10 @@ func controlMain(argv []string) error {
 		if err != nil {
 			return err
 		}
+		sess.agentChannel = proxy.link
 		sess.onFirstConnect = func(ctx context.Context) {
-			if err := proxy.bootstrap(ctx); err != nil {
-				logf("agent bootstrap failed (desktop tools still work): %v", err)
+			if _, err := proxy.connection(ctx); err != nil {
+				logf("agent start failed (desktop tools still work): %v", err)
 			}
 		}
 	}
@@ -266,21 +267,6 @@ func firstText(blocks []contentBlock) string {
 		}
 	}
 	return ""
-}
-
-func poll(ctx context.Context, timeout time.Duration, check func() bool, failMsg string) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		if check() {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return errors.New(failMsg)
-		}
-		if !sleepCtx(ctx, 250*time.Millisecond) {
-			return ctx.Err()
-		}
-	}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

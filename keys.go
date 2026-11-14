@@ -22,6 +22,7 @@ var (
 	keyA     = mustLookupKey("a")
 	keyR     = mustLookupKey("r")
 	keyV     = mustLookupKey("v")
+	keyEsc   = mustLookupKey("esc")
 	keyDel   = mustLookupKey("delete")
 )
 

@@ -2,10 +2,12 @@ package rdpdr
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 type capture struct{ packets [][]byte }
@@ -104,6 +106,23 @@ func TestHandshakeAnnouncesDriveAfterLogon(t *testing.T) {
 	d.Process(packet(componentCore, packetUserLoggedOn))
 	if len(c.packets) != 0 {
 		t.Fatal("drive announced twice")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := d.WaitAccepted(ctx); err == nil {
+		t.Fatal("the drive reported accepted before the server replied")
+	}
+	d.Process(packet(componentCore, packetDeviceReply, le32(driveDeviceID), le32(0)))
+	if err := d.WaitAccepted(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	d.Process(packet(componentCore, packetServerAnnounce, []byte{1, 0, 0x0D, 0}, le32(8)))
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel2()
+	if err := d.WaitAccepted(ctx2); err == nil {
+		t.Fatal("acceptance survived a new connection's server announce")
 	}
 }
 

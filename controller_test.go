@@ -292,21 +292,27 @@ func TestPaintComposesBitmapsIntoTheFramebuffer(t *testing.T) {
 	}
 }
 
-func TestLaunchCommandCarriesTierFlags(t *testing.T) {
+func TestLaunchCommandCarriesTokenAndTierFlags(t *testing.T) {
 	p, err := newAgentProxy(nil, "", map[string]bool{"Shell": true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := p.launchCommand()
-	want := `\\tsclient\mcp\win-rdp-mcp.exe --transport dir --dir \\tsclient\mcp\` + p.rpcName + ` --enable-tier3 --disable-tier2`
+	want := `cmd /c \\tsclient\mcp\win-rdp-mcp.exe --transport rdpvc --token ` + p.link.token + ` --enable-tier3 --disable-tier2`
 	if got != want {
 		t.Fatalf("launch = %q, want %q", got, want)
+	}
+	if len(got) > runDialogMaxChars {
+		t.Fatalf("launch command is %d characters; the Run dialog truncates past %d", len(got), runDialogMaxChars)
+	}
+	if !validAgentToken(p.link.token) {
+		t.Fatalf("token %q is not a valid agent token", p.link.token)
 	}
 	other, err := newAgentProxy(nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(p.rpcName, "rpc-") || p.rpcName == other.rpcName {
-		t.Fatalf("exchange names %q and %q must be distinct rpc-* names, so a stale agent cannot share one", p.rpcName, other.rpcName)
+	if p.link.token == other.link.token {
+		t.Fatal("two controllers drew the same token, so a stale agent could not be told apart")
 	}
 }

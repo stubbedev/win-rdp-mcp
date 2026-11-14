@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -711,4 +712,8 @@ func systemLanguage() string {
 		return "unknown"
 	}
 	return windows.UTF16ToString(buf[:n])
+}
+
+func hideChildConsole(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 }

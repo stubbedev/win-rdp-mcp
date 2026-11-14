@@ -32,8 +32,8 @@ Two halves, one binary:
 │    driven in-process         │              │                          │
 │                              │── drive ─────▶│  win-rdp-mcp.exe (agent) │
 │  • pushes the agent over the │   redirection │   pushed + run in-session│
-│    redirected drive, talks   │◀── files ────▶│   window tree, shell,    │
-│    to it via files on it     │   over RDP    │   registry, files, ...   │
+│    redirected drive, talks   │◀── virtual ──▶│   window tree, shell,    │
+│    to it over a virtual chan.│    channel    │   registry, files, ...   │
 └──────────────────────────────┘              └──────────────────────────┘
 ```
 
@@ -42,7 +42,13 @@ Two halves, one binary:
 - The **system tier** — window enumeration with coordinates, `Shell`, files,
   registry, services, tasks, event log, OCR — is served by an agent the
   controller **pushes into the RDP session over drive redirection** and talks to
-  through files on that same redirected drive. Still nothing but RDP on the wire.
+  over an RDP dynamic virtual channel. Still nothing but RDP on the wire.
+
+The agent copies itself out of the redirected drive into
+`%LOCALAPPDATA%\win-rdp-mcp` and runs from there with no console window, so it
+survives RDP reconnects. Calls are pushed over the channel (a round trip is a few
+milliseconds) and can run concurrently. If the agent dies, the next call
+relaunches it; an agent left over from an earlier controller is told to exit.
 
 The agent can also run standalone on the target (stdio or HTTP) if you'd rather
 install it — see [Running the agent directly](#running-the-agent-directly).
@@ -198,8 +204,8 @@ GNU-style: every option has a `--long` form; the common ones a `-short` alias.
 ### Agent (`win-rdp-mcp`, runs on the target)
 
 ```
--t, --transport stdio|streamable-http|dir   default streamable-http
-    --dir PATH                              exchange dir for --transport dir
+-t, --transport stdio|streamable-http|rdpvc default streamable-http
+    --token HEX                             session token for --transport rdpvc
 -H, --host / -p, --port                     bind address (default 127.0.0.1:8090)
 -k, --auth-key KEY                          also $WIN_RDP_MCP_AUTH_KEY
     --allow-insecure-remote                 non-loopback bind with no auth (danger)
@@ -245,8 +251,8 @@ tools that need Win32 (window management, OCR, recording, the annotated view):
 - *Network:* `Ping`, `PortCheck`, `NetConnections`, `Scrape`
 - *Tasks:* `GetTaskStatus`, `GetRunningTasks`, `CancelTask`
 
-The first agent-served call after connect waits ~40s while the agent bootstraps
-into the session; the locally-served tools work immediately.
+The first agent-served call after connect waits ~10s while the agent starts in
+the session; the locally-served tools work immediately.
 
 ---
 
@@ -348,7 +354,8 @@ just               # list every recipe
 | `sysadmin*.go` | services, scheduled tasks, event log and ping via Win32/COM |
 | `internal/grdp` | the RDP client, vendored from [nakagami/grdp](https://github.com/nakagami/grdp) v0.9.12 (GPL-3.0) with audio and cgo stripped and hooks added for drive redirection, direct input and clipboard paste |
 | `internal/rdpdr` | the redirected drive (MS-RDPEFS) that carries the agent and its RPC |
-| `dirserve.go` | the agent's `dir` transport (file request/response) |
+| `rpc.go` | the controller↔agent protocol: framed JSON calls over the virtual channel |
+| `agent_channel*.go` | the agent side of the virtual channel, and its self-relocation |
 | `tools.json` / `tools.go` | tool schemas + agent registration/dispatch |
 | `desktop.go` / `system.go` | the agent's Win32 and system tools |
 | `platform_windows.go` / `platform_other.go` | the Win32 layer + off-Windows stubs |

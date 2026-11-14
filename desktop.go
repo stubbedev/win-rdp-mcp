@@ -531,6 +531,7 @@ func runCommand(ctx context.Context, timeout time.Duration, name string, args ..
 
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = commandWaitDelay
+	hideChildConsole(cmd)
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 
