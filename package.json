@@ -1,6 +1,6 @@
 {
   "name": "@stubbedev/win-rdp-mcp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Control a Windows machine over RDP as MCP tools — screenshots, mouse/keyboard, PowerShell, files, registry. Give it only RDP credentials.",
   "license": "GPL-3.0-only",
   "type": "module",
