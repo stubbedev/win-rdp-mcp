@@ -407,29 +407,28 @@ func ocrTool(ctx context.Context, args arguments) (toolResult, error) {
 
 func windowsBuiltinOCR(ctx context.Context, imagePath string) (string, error) {
 	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
 $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType = WindowsRuntime]
-Add-Type -TypeDefinition @'
-using System;
-using System.Threading.Tasks;
-public static class AsyncHelper {
-    public static T Await<T>(Windows.Foundation.IAsyncOperation<T> op) {
-        return Task.Run(() => {
-            while (op.Status == Windows.Foundation.AsyncStatus.Started) { System.Threading.Thread.Sleep(10); }
-            return op.GetResults();
-        }).Result;
-    }
+$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrResult, Windows.Foundation, ContentType = WindowsRuntime]
+$asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`+"`"+`1' } | Select-Object -First 1
+function Await($operation, [Type]$resultType) {
+    $task = $asTask.MakeGenericMethod($resultType).Invoke($null, @($operation))
+    $null = $task.Wait(-1)
+    $task.Result
 }
-'@ -ReferencedAssemblies "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.WindowsRuntime.dll"
 $stream = [System.IO.File]::OpenRead(%s)
 try {
     $ras = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($stream)
-    $decoder = [AsyncHelper]::Await([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($ras))
-    $bitmap = [AsyncHelper]::Await($decoder.GetSoftwareBitmapAsync())
+    $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($ras)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    $bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
     $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
     if ($null -eq $engine) { throw "No OCR language pack is installed for this user profile." }
-    Write-Output ([AsyncHelper]::Await($engine.RecognizeAsync($bitmap))).Text
+    (Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])).Text
 } finally { $stream.Close() }`, psQuote(imagePath))
 
 	out, err := runPowerShell(ctx, script, 60*time.Second)
@@ -524,11 +523,14 @@ func runPowerShell(ctx context.Context, command string, timeout time.Duration) (
 	return runCommand(ctx, timeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
 }
 
+const commandWaitDelay = 5 * time.Second
+
 func runCommand(ctx context.Context, timeout time.Duration, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = commandWaitDelay
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 

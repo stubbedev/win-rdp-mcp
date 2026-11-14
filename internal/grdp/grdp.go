@@ -996,6 +996,13 @@ func (g *RdpClient) NotifyClipboardChanged() {
 	}
 }
 
+func (g *RdpClient) AnnounceClipboard() (<-chan bool, error) {
+	if g.cliprdrHandler == nil {
+		return nil, cliprdr.ErrClipboardNotReady
+	}
+	return g.cliprdrHandler.Announce()
+}
+
 func (g *RdpClient) notifyGfxLocalInput() {
 	if gfx := g.gfxHandler; gfx != nil {
 		gfx.NotifyLocalInput()

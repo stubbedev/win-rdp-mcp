@@ -21,6 +21,7 @@ var (
 	keyTab   = keyDef{vk: 0x09, scan: 0x0F}
 	keyA     = mustLookupKey("a")
 	keyR     = mustLookupKey("r")
+	keyV     = mustLookupKey("v")
 	keyDel   = mustLookupKey("delete")
 )
 

@@ -18,6 +18,10 @@ type inputSink interface {
 	Pointer(flags uint16, x, y int) error
 }
 
+type clipboardOffer interface {
+	offerClipboard(ctx context.Context, text string) error
+}
+
 type pointerButton uint16
 
 const (
@@ -43,9 +47,17 @@ func parsePointerButton(name string) (pointerButton, error) {
 }
 
 type desktopInput struct {
-	sink    inputSink
-	size    sessionSize
-	pointer *image.Point
+	sink      inputSink
+	clipboard clipboardOffer
+	size      sessionSize
+	pointer   *image.Point
+}
+
+func (in *desktopInput) paste(ctx context.Context, text string) error {
+	if err := in.clipboard.offerClipboard(ctx, text); err != nil {
+		return err
+	}
+	return in.press(keyCtrl, keyV)
 }
 
 func (in *desktopInput) checkPoint(x, y int) error {

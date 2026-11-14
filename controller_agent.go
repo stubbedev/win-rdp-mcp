@@ -29,13 +29,22 @@ type agentProxy struct {
 	session  *rdpSession
 	agentExe string
 	enabled  map[string]bool
+	rpcName  string
 
 	up      atomic.Bool
 	once    sync.Once
 	bootErr atomic.Pointer[error]
 }
 
-func (p *agentProxy) rpcDir() string { return filepath.Join(p.session.workdir, "rpc") }
+func newAgentProxy(session *rdpSession, agentExe string, enabled map[string]bool) (*agentProxy, error) {
+	var token [8]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return nil, fmt.Errorf("generating the agent exchange directory name: %w", err)
+	}
+	return &agentProxy{session: session, agentExe: agentExe, enabled: enabled, rpcName: "rpc-" + hex.EncodeToString(token[:])}, nil
+}
+
+func (p *agentProxy) rpcDir() string { return filepath.Join(p.session.workdir, p.rpcName) }
 func (p *agentProxy) ready() bool    { return p.up.Load() }
 
 func (p *agentProxy) bootstrap(ctx context.Context) error {
@@ -51,7 +60,7 @@ func (p *agentProxy) bootstrap(ctx context.Context) error {
 }
 
 func (p *agentProxy) launchCommand() string {
-	return agentUNCPath + `\win-rdp-mcp.exe --transport dir --dir ` + agentUNCPath + `\rpc` + p.tierFlags()
+	return agentUNCPath + `\win-rdp-mcp.exe --transport dir --dir ` + agentUNCPath + `\` + p.rpcName + p.tierFlags()
 }
 
 func (p *agentProxy) doBootstrap(ctx context.Context) error {
@@ -73,7 +82,8 @@ func (p *agentProxy) doBootstrap(ctx context.Context) error {
 		act    func(*desktopInput) error
 	}{
 		{runDialogSettle, func(in *desktopInput) error { return in.press(keyWin, keyR) }},
-		{runCommandSettle, func(in *desktopInput) error { return in.typeString(launch) }},
+		{runCommandSettle, func(in *desktopInput) error { return in.paste(ctx, launch) }},
+		{0, func(in *desktopInput) error { return in.press(keyDel) }},
 		{0, func(in *desktopInput) error { return in.press(keyEnter) }},
 	}
 	for _, step := range steps {
@@ -113,6 +123,7 @@ func (p *agentProxy) tierFlags() string {
 func (p *agentProxy) call(ctx context.Context, name string, args map[string]any) (toolResult, error) {
 	p.session.mu.Lock()
 	err := p.session.ensureConnected(ctx)
+	conn := p.session.conn
 	p.session.mu.Unlock()
 	if err != nil {
 		return toolResult{}, err
@@ -145,9 +156,12 @@ func (p *agentProxy) call(ctx context.Context, name string, args map[string]any)
 	respPath := filepath.Join(p.rpcDir(), "resp", id+".json")
 	callCtx, cancel := context.WithTimeout(ctx, toolCallTimeout)
 	defer cancel()
-	if err := poll(callCtx, toolCallTimeout, func() bool { return fileExists(respPath) },
+	if err := poll(callCtx, toolCallTimeout, func() bool { return fileExists(respPath) || !conn.alive() },
 		"no response from the agent (it may have exited)"); err != nil {
 		return toolResult{}, err
+	}
+	if !fileExists(respPath) {
+		return toolResult{}, fmt.Errorf("the RDP connection dropped while %s was running, so its result was lost: %s", name, conn.exitReason())
 	}
 
 	raw, err := os.ReadFile(respPath)

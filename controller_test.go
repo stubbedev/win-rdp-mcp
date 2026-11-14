@@ -293,10 +293,20 @@ func TestPaintComposesBitmapsIntoTheFramebuffer(t *testing.T) {
 }
 
 func TestLaunchCommandCarriesTierFlags(t *testing.T) {
-	p := &agentProxy{enabled: map[string]bool{"Shell": true}}
+	p, err := newAgentProxy(nil, "", map[string]bool{"Shell": true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := p.launchCommand()
-	want := `\\tsclient\mcp\win-rdp-mcp.exe --transport dir --dir \\tsclient\mcp\rpc --enable-tier3 --disable-tier2`
+	want := `\\tsclient\mcp\win-rdp-mcp.exe --transport dir --dir \\tsclient\mcp\` + p.rpcName + ` --enable-tier3 --disable-tier2`
 	if got != want {
 		t.Fatalf("launch = %q, want %q", got, want)
+	}
+	other, err := newAgentProxy(nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(p.rpcName, "rpc-") || p.rpcName == other.rpcName {
+		t.Fatalf("exchange names %q and %q must be distinct rpc-* names, so a stale agent cannot share one", p.rpcName, other.rpcName)
 	}
 }

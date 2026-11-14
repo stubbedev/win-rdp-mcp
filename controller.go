@@ -93,7 +93,10 @@ func controlMain(argv []string) error {
 		if exe == "" {
 			exe = defaultAgentExe()
 		}
-		proxy = &agentProxy{session: sess, agentExe: exe, enabled: enabled}
+		proxy, err = newAgentProxy(sess, exe, enabled)
+		if err != nil {
+			return err
+		}
 		sess.onFirstConnect = func(ctx context.Context) {
 			if err := proxy.bootstrap(ctx); err != nil {
 				logf("agent bootstrap failed (desktop tools still work): %v", err)

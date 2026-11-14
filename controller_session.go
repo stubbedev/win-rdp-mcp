@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp"
@@ -16,12 +17,13 @@ import (
 )
 
 const (
-	defaultRDPPort  = "3389"
-	dialTimeout     = 15 * time.Second
-	reconnectSettle = 2 * time.Second
-	driveName       = "mcp"
-	minSessionSide  = 200
-	maxSessionSide  = 8192
+	defaultRDPPort   = "3389"
+	dialTimeout      = 15 * time.Second
+	reconnectSettle  = 2 * time.Second
+	clipboardAckWait = 5 * time.Second
+	driveName        = "mcp"
+	minSessionSide   = 200
+	maxSessionSide   = 8192
 )
 
 type sessionSize struct{ width, height int }
@@ -74,6 +76,36 @@ type rdpConn struct {
 	done     chan struct{}
 	doneOnce sync.Once
 	cause    error
+
+	clipboard atomic.Pointer[string]
+}
+
+func (c *rdpConn) clipboardText() string {
+	if p := c.clipboard.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func (c *rdpConn) offerClipboard(ctx context.Context, text string) error {
+	c.clipboard.Store(&text)
+	ack, err := c.client.AnnounceClipboard()
+	if err != nil {
+		return fmt.Errorf("offering text on the session clipboard: %w", err)
+	}
+	timer := time.NewTimer(clipboardAckWait)
+	defer timer.Stop()
+	select {
+	case accepted := <-ack:
+		if !accepted {
+			return errors.New("the session refused the clipboard offer")
+		}
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("the session did not answer the clipboard offer within %s", clipboardAckWait)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *rdpConn) alive() bool {
@@ -208,6 +240,7 @@ func (s *rdpSession) connect() (*rdpConn, error) {
 	}
 	client.SetDeviceRedirection(s.drive)
 	client.OnBitmap(conn.paint)
+	client.OnClipboard(nil, conn.clipboardText)
 	client.OnError(func(err error) { conn.end(err) })
 	client.OnClose(func() { conn.end(nil) })
 	if err := client.Login(s.domain, s.user, s.pass); err != nil {
@@ -236,7 +269,7 @@ func (s *rdpSession) wake(ctx context.Context) error {
 }
 
 func (s *rdpSession) input() *desktopInput {
-	return &desktopInput{sink: s.conn.client, size: s.size, pointer: &s.pointer}
+	return &desktopInput{sink: s.conn.client, clipboard: s.conn, size: s.size, pointer: &s.pointer}
 }
 
 func (s *rdpSession) withInput(ctx context.Context, f func(*desktopInput) (toolResult, error)) (toolResult, error) {

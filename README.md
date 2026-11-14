@@ -74,6 +74,10 @@ the bitmap and RemoteFX codecs, and drive redirection), so there is no FreeRDP,
 X server or screenshot tool to install. Drive the controller from Linux, macOS
 or Windows.
 
+The agent is launched by pasting its command into the Run dialog over RDP
+clipboard redirection, so the target must allow both drive and clipboard
+redirection (the Windows defaults).
+
 The target account must be able to log in over RDP. That's it — no admin share,
 no WinRM, no firewall change.
 
@@ -342,7 +346,7 @@ just               # list every recipe
 | `controller_agent.go` | pushing the agent into the session, the file-RPC client |
 | `keys.go` | the key table shared by the controller (scancodes) and agent (virtual keys) |
 | `sysadmin*.go` | services, scheduled tasks, event log and ping via Win32/COM |
-| `internal/grdp` | the RDP client, vendored from [nakagami/grdp](https://github.com/nakagami/grdp) v0.9.12 (GPL-3.0) with audio and cgo stripped and hooks added for drive redirection and direct input |
+| `internal/grdp` | the RDP client, vendored from [nakagami/grdp](https://github.com/nakagami/grdp) v0.9.12 (GPL-3.0) with audio and cgo stripped and hooks added for drive redirection, direct input and clipboard paste |
 | `internal/rdpdr` | the redirected drive (MS-RDPEFS) that carries the agent and its RPC |
 | `dirserve.go` | the agent's `dir` transport (file request/response) |
 | `tools.json` / `tools.go` | tool schemas + agent registration/dispatch |

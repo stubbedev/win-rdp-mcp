@@ -8,8 +8,10 @@ package cliprdr
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"unicode/utf16"
 
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp/core"
@@ -19,7 +21,9 @@ import (
 // static virtual channel.  It uses callbacks for clipboard integration
 // so that any UI toolkit can wire in its own clipboard access.
 type CliprdrHandler struct {
+	mu            sync.Mutex
 	channelSender core.ChannelSender
+	formatListAck chan bool
 
 	useLongFormatNames bool
 
@@ -65,6 +69,8 @@ func (h *CliprdrHandler) GetType() (string, uint32) {
 }
 
 func (h *CliprdrHandler) Sender(f core.ChannelSender) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.channelSender = f
 }
 
@@ -85,6 +91,9 @@ func (h *CliprdrHandler) Process(s []byte) {
 	}
 
 	slog.Debug("cliprdr recv", "msgType", msgType, "msgFlags", msgFlags, "dataLen", dataLen)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
 	switch msgType {
 	case CB_CLIP_CAPS:
@@ -247,10 +256,15 @@ func (h *CliprdrHandler) parseFormatList(body []byte, msgFlags uint16) []Cliprdr
 }
 
 func (h *CliprdrHandler) processFormatListResponse(msgFlags uint16) {
-	if msgFlags&CB_RESPONSE_OK != 0 {
+	ok := msgFlags&CB_RESPONSE_OK != 0
+	if ok {
 		slog.Debug("cliprdr: Format List Response OK")
 	} else {
 		slog.Warn("cliprdr: Format List Response FAIL")
+	}
+	if h.formatListAck != nil {
+		h.formatListAck <- ok
+		h.formatListAck = nil
 	}
 }
 
@@ -310,6 +324,8 @@ func (h *CliprdrHandler) processFormatDataResponse(body []byte, msgFlags uint16)
 // content has changed.  Call this from the UI when the system clipboard
 // changes (e.g. via polling or a platform clipboard-change signal).
 func (h *CliprdrHandler) OnLocalClipboardChanged() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.suppressNextLocalChange {
 		h.suppressNextLocalChange = false
 		return
@@ -318,6 +334,23 @@ func (h *CliprdrHandler) OnLocalClipboardChanged() {
 		h.sendFormatList()
 		slog.Debug("cliprdr: local clipboard changed, sent Format List")
 	}
+}
+
+var ErrClipboardNotReady = errors.New("cliprdr: the server has not opened the clipboard channel")
+
+// Announce offers the local clipboard text to the server and returns a
+// channel that receives whether the server accepted the Format List.
+func (h *CliprdrHandler) Announce() (<-chan bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.channelSender == nil || !h.monitorReady || !h.serverCapsReceived {
+		return nil, ErrClipboardNotReady
+	}
+	ack := make(chan bool, 1)
+	h.formatListAck = ack
+	h.suppressNextLocalChange = false
+	h.sendFormatList()
+	return ack, nil
 }
 
 // --- Send helpers ----------------------------------------------------------

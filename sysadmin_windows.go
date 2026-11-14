@@ -289,6 +289,7 @@ const (
 	icmpReplyHeaderSize = 64
 	icmpPayload         = "win-rdp-mcp"
 	icmpv6StatusOffset  = 28
+	icmpRTTFieldAfter   = 4
 	afInet6             = 23
 )
 
@@ -324,7 +325,6 @@ func pingOnce(_ context.Context, ip net.IP, timeout time.Duration) (time.Duratio
 	payload := []byte(icmpPayload)
 	reply := make([]byte, icmpReplyHeaderSize+len(payload)+8)
 	ms := uintptr(timeout.Milliseconds())
-	start := time.Now()
 	var n uintptr
 	if v4 != nil {
 		addr := binary.LittleEndian.Uint32(v4)
@@ -339,7 +339,6 @@ func pingOnce(_ context.Context, ip net.IP, timeout time.Duration) (time.Duratio
 			uintptr(unsafe.Pointer(&payload[0])), uintptr(len(payload)), 0,
 			uintptr(unsafe.Pointer(&reply[0])), uintptr(len(reply)), ms)
 	}
-	rtt := time.Since(start)
 	if n == 0 {
 		var errno windows.Errno
 		if errors.As(e, &errno) {
@@ -354,7 +353,8 @@ func pingOnce(_ context.Context, ip net.IP, timeout time.Duration) (time.Duratio
 	if status := binary.LittleEndian.Uint32(reply[statusOffset:]); status != icmpStatusSuccess {
 		return 0, icmpError(ip, status)
 	}
-	return rtt, nil
+	rttMs := binary.LittleEndian.Uint32(reply[statusOffset+icmpRTTFieldAfter:])
+	return time.Duration(rttMs) * time.Millisecond, nil
 }
 
 const (

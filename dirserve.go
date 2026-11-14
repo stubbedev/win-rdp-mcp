@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -88,6 +90,7 @@ func serveDir(ctx context.Context, dir string, enabled map[string]bool) error {
 
 	ticker := time.NewTicker(dirPollInterval)
 	defer ticker.Stop()
+	lastPollErr := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -95,7 +98,20 @@ func serveDir(ctx context.Context, dir string, enabled map[string]bool) error {
 		case <-ticker.C:
 			entries, err := os.ReadDir(reqDir)
 			if err != nil {
+				if exchangeAbandoned(dir) {
+					logf("exchange directory %s is gone while its drive is still reachable; the controller that started this agent has exited", dir)
+					return nil
+				}
+				if msg := err.Error(); msg != lastPollErr {
+					dirFail(dir, "listing %s: %v (retrying until the drive returns)", reqDir, err)
+					lastPollErr = msg
+				}
 				continue
+			}
+			if lastPollErr != "" {
+				dirLog(dir, "exchange directory reachable again")
+				logf("exchange directory reachable again")
+				lastPollErr = ""
 			}
 			// Deterministic order so a burst of requests is handled oldest-id
 			// first rather than in readdir order.
@@ -107,29 +123,49 @@ func serveDir(ctx context.Context, dir string, enabled map[string]bool) error {
 			}
 			sort.Strings(names)
 			for _, name := range names {
-				handleDirRequest(ctx, reqDir, respDir, name, enabled, resolved)
+				if err := handleDirRequest(ctx, reqDir, respDir, name, enabled, resolved); err != nil {
+					dirFail(dir, "%v", err)
+				}
 			}
 		}
 	}
 }
 
-func handleDirRequest(ctx context.Context, reqDir, respDir, name string, enabled map[string]bool, resolved map[string]*jsonschema.Resolved) {
+func exchangeAbandoned(dir string) bool {
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	drive, err := os.Stat(filepath.Dir(dir))
+	return err == nil && drive.IsDir()
+}
+
+func dirFail(dir, format string, args ...any) {
+	logf(format, args...)
+	dirLog(dir, format, args...)
+}
+
+func handleDirRequest(ctx context.Context, reqDir, respDir, name string, enabled map[string]bool, resolved map[string]*jsonschema.Resolved) error {
 	reqPath := filepath.Join(reqDir, name)
 	raw, err := os.ReadFile(reqPath)
 	if err != nil {
-		return
+		return fmt.Errorf("reading request %s: %w", name, err)
 	}
 	// Remove the request first: a malformed or duplicate file must not be
 	// reprocessed on every tick.
-	os.Remove(reqPath)
+	if err := os.Remove(reqPath); err != nil {
+		return fmt.Errorf("removing request %s: %w", name, err)
+	}
 
 	var req dirRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		return
+		return fmt.Errorf("decoding request %s: %w", name, err)
 	}
 
 	resp := runDirTool(ctx, req, enabled, resolved)
-	writeDirResponse(respDir, resp)
+	if err := writeDirResponse(respDir, resp); err != nil {
+		return fmt.Errorf("answering %s (%s): %w", req.ID, req.Name, err)
+	}
+	return nil
 }
 
 // runDirTool applies the same gate → validate → run pipeline the MCP dispatch
@@ -165,17 +201,17 @@ func runDirTool(ctx context.Context, req dirRequest, enabled map[string]bool, re
 
 // writeDirResponse writes atomically (temp + rename) so the controller never
 // reads a half-written reply.
-func writeDirResponse(respDir string, resp dirResponse) {
+func writeDirResponse(respDir string, resp dirResponse) error {
 	data, err := json.Marshal(resp)
 	if err != nil {
-		return
+		return fmt.Errorf("encoding the response: %w", err)
 	}
 	final := filepath.Join(respDir, resp.ID+".json")
 	tmp := final + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return
+		return err
 	}
-	os.Rename(tmp, final)
+	return os.Rename(tmp, final)
 }
 
 // resolveSchemas compiles every tool's input schema once, for validation.

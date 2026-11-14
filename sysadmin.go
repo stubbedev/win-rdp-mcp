@@ -262,13 +262,20 @@ func formatPing(host string, ip net.IP, replies []pingReply) string {
 		maxRTT = max(maxRTT, r.RTT)
 		total += r.RTT
 		received++
-		fmt.Fprintf(&b, "  Reply from %s: time=%s\n", ip, r.RTT.Round(time.Microsecond))
+		fmt.Fprintf(&b, "  Reply from %s: time%s\n", ip, formatRTT(r.RTT))
 	}
 	lost := len(replies) - received
 	fmt.Fprintf(&b, "Packets: sent %d, received %d, lost %d (%d%% loss)", len(replies), received, lost, lost*100/len(replies))
 	if received > 0 {
-		fmt.Fprintf(&b, "\nRound trip: min %s, max %s, avg %s",
-			minRTT.Round(time.Microsecond), maxRTT.Round(time.Microsecond), (total / time.Duration(received)).Round(time.Microsecond))
+		fmt.Fprintf(&b, "\nRound trip: min%s, max%s, avg%s",
+			formatRTT(minRTT), formatRTT(maxRTT), formatRTT(total/time.Duration(received)))
 	}
 	return b.String()
+}
+
+func formatRTT(d time.Duration) string {
+	if d < time.Millisecond {
+		return "<1ms"
+	}
+	return "=" + d.Round(time.Microsecond).String()
 }

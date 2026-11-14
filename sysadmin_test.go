@@ -53,13 +53,15 @@ func TestFormatPing(t *testing.T) {
 		{RTT: 2 * time.Millisecond},
 		{Err: errors.New("192.0.2.7: request timed out")},
 		{RTT: 4 * time.Millisecond},
+		{RTT: 300 * time.Microsecond},
 	})
 	for _, want := range []string{
 		"Pinging box [192.0.2.7]:",
 		"Reply from 192.0.2.7: time=2ms",
+		"Reply from 192.0.2.7: time<1ms",
 		"request timed out",
-		"sent 3, received 2, lost 1 (33% loss)",
-		"min 2ms, max 4ms, avg 3ms",
+		"sent 4, received 3, lost 1 (25% loss)",
+		"min<1ms, max=4ms, avg=2.1ms",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("ping report lacks %q:\n%s", want, out)
