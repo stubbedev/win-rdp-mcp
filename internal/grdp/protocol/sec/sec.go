@@ -298,7 +298,7 @@ func (s *SEC) SendFastPath(secFlag byte, b []byte) (int, error) {
 }
 
 func (s *SEC) sendFlagged(flag uint16, data []byte) (n int, err error) {
-	slog.Debug("sendFlagged", "flag", flag, "data", core.Hex(data))
+	slog.Debug("sendFlagged", "flag", flag, "len", len(data))
 	return s.transport.Write(withSecurityHeader(flag, data))
 }
 
