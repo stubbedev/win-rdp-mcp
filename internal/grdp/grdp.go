@@ -603,13 +603,11 @@ func (g *RdpClient) doLogin(routingToken []byte) error {
 
 	// Wire fast-path output: pdu → sec → tpkt.  This enables the much
 	// shorter Fast-Path Client Input PDU framing for mouse/keyboard events
-	// (MS-RDPBCGR §2.2.8.1.2).  Use is gated at runtime both by capability
-	// negotiation in the PDU layer and by sec.SendFastPath itself, which
-	// refuses when legacy RDP encryption is in effect.
+	// (MS-RDPBCGR §2.2.8.1.2).  Use is gated at runtime by capability
+	// negotiation in the PDU layer.
 	g.sec.SetFastPathSender(g.tpkt)
 	g.pdu.SetFastPathSender(g.sec)
 
-	g.x224.SetRequestedProtocol(x224.PROTOCOL_SSL | x224.PROTOCOL_HYBRID)
 	if routingToken != nil {
 		g.x224.SetRoutingToken(routingToken)
 	} else {

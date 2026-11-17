@@ -148,6 +148,10 @@ the bitmap and RemoteFX codecs, and drive redirection), so there is no FreeRDP,
 X server or screenshot tool to install. Drive the controller from Linux, macOS
 or Windows.
 
+The target must offer TLS or Network Level Authentication (the Windows
+default). A server that only offers the legacy Standard RDP Security layer is
+refused: it would send the password under RC4 to a server nobody verified.
+
 The agent is launched by pasting its command into the Run dialog over RDP
 clipboard redirection, so the target must allow both drive and clipboard
 redirection (the Windows defaults).

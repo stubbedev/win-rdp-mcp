@@ -251,22 +251,6 @@ type SEC struct {
 	clientData  []any
 	serverData  []any
 
-	enableEncryption bool
-	//Enable Secure Mac generation
-	enableSecureCheckSum bool
-	//counter before update
-	nbEncryptedPacket int
-	nbDecryptedPacket int
-
-	currentDecrytKey  []byte
-	currentEncryptKey []byte
-
-	//current rc4 tab
-	decryptRc4 *rc4.Cipher
-	encryptRc4 *rc4.Cipher
-
-	macKey []byte
-
 	// fastPathSender is the underlying transport (typically TPKT) that knows
 	// how to wrap a payload in a fast-path frame.  Set via SetFastPathSender
 	// to enable Fast-Path Client Input PDUs (MS-RDPBCGR §2.2.8.1.2).
@@ -275,22 +259,9 @@ type SEC struct {
 
 func NewSEC(t core.Transport) *SEC {
 	sec := &SEC{
-		*emission.NewEmitter(),
-		t,
-		NewRDPInfo(),
-		"",
-		nil,
-		nil,
-		false,
-		false,
-		0,
-		0,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
+		Emitter:   *emission.NewEmitter(),
+		transport: t,
+		info:      NewRDPInfo(),
 	}
 
 	t.On("close", func() {
@@ -306,11 +277,7 @@ func (s *SEC) Read(data []byte) (n int, err error) {
 }
 
 func (s *SEC) Write(b []byte) (n int, err error) {
-	if !s.enableEncryption {
-		return s.transport.Write(b)
-	}
-	data := s.encrytData(b)
-	return s.transport.Write(data)
+	return s.transport.Write(b)
 }
 
 func (s *SEC) Close() error {
@@ -323,31 +290,16 @@ func (s *SEC) SetFastPathSender(f core.FastPathSender) {
 	s.fastPathSender = f
 }
 
-// SendFastPath wraps the given payload in a fast-path frame using the
-// underlying transport.  Returns an error when legacy RDP encryption is
-// enabled (this layer does not yet sign fast-path output), allowing the
-// caller to fall back to a slow-path send.
 func (s *SEC) SendFastPath(secFlag byte, b []byte) (int, error) {
 	if s.fastPathSender == nil {
 		return 0, fmt.Errorf("sec: fastPathSender not set")
 	}
-	if s.enableEncryption {
-		return 0, fmt.Errorf("sec: fast-path output not supported with legacy encryption")
-	}
 	return s.fastPathSender.SendFastPath(secFlag, b)
-}
-
-// LegacyEncryptionEnabled reports whether the per-PDU RDP encryption layer
-// (not TLS/CredSSP) is in use.  Callers use this to disable optimisations
-// like fast-path input that this layer does not yet implement signing for.
-func (s *SEC) LegacyEncryptionEnabled() bool {
-	return s.enableEncryption
 }
 
 func (s *SEC) sendFlagged(flag uint16, data []byte) (n int, err error) {
 	slog.Debug("sendFlagged", "flag", flag, "data", core.Hex(data))
-	b := s.encryt(flag, data)
-	return s.transport.Write(b)
+	return s.transport.Write(withSecurityHeader(flag, data))
 }
 
 /*
@@ -376,86 +328,20 @@ func macData(macSaltKey, data []byte) []byte {
 
 	return md5Digest.Sum(nil)
 }
-func (s *SEC) readEncryptedPayload(data []byte, checkSum bool) []byte {
-	sign := data[:8]
-	slog.Debug("readEncryptedPayload", "sign", sign)
-	encryptedPayload := data[8:]
-	if s.decryptRc4 == nil {
-		s.decryptRc4, _ = rc4.NewCipher(s.currentDecrytKey)
-	}
-	s.nbDecryptedPacket++
-	plaintext := make([]byte, len(encryptedPayload))
-	s.decryptRc4.XORKeyStream(plaintext, encryptedPayload)
-
-	return plaintext
-}
-func (s *SEC) writeEncryptedPayload(data []byte, checkSum bool) []byte {
-	if checkSum {
-		return []byte{}
-	}
-
-	s.nbEncryptedPacket++
-	slog.Debug("writeEncryptedPayload", "nbEncryptedPacket", s.nbEncryptedPacket)
-
-	sign := macData(s.macKey, data)[:8]
-	if s.encryptRc4 == nil {
-		s.encryptRc4, _ = rc4.NewCipher(s.currentEncryptKey)
-	}
-
-	result := make([]byte, 8+len(data))
-	copy(result[:8], sign)
-	s.encryptRc4.XORKeyStream(result[8:], data)
-	slog.Debug("writeEncryptedPayload", "sign", core.Hex(sign), "plaintext", core.Hex(result[8:]))
-	return result
-}
-
-func (s *SEC) encryt(flag uint16, b []byte) []byte {
-	data := b
-	if flag&ENCRYPT != 0 {
-		data = s.writeEncryptedPayload(b, flag&SECURE_CHECKSUM != 0)
-	}
+func withSecurityHeader(flag uint16, data []byte) []byte {
 	result := make([]byte, 4+len(data))
 	binary.LittleEndian.PutUint16(result[0:], flag)
-	binary.LittleEndian.PutUint16(result[2:], 0)
 	copy(result[4:], data)
 	return result
-}
-func (s *SEC) encrytData(b []byte) []byte {
-	if !s.enableEncryption {
-		return b
-	}
-
-	var flag uint16 = ENCRYPT
-	if s.enableSecureCheckSum {
-		flag |= SECURE_CHECKSUM
-	}
-	return s.encryt(flag, b)
-}
-
-func (s *SEC) decrytData(b []byte) []byte {
-	if !s.enableEncryption {
-		return b
-	}
-
-	if len(b) < 4 {
-		return b
-	}
-	securityFlag := binary.LittleEndian.Uint16(b[0:])
-	// securityFlagHi = b[2:4] (ignored)
-	data := b[4:]
-	if securityFlag&ENCRYPT != 0 {
-		data = s.readEncryptedPayload(data, securityFlag&SECURE_CHECKSUM != 0)
-	}
-	return data
 }
 
 type Client struct {
 	*SEC
 	userId    uint16
 	channelId uint16
-	//initialise decrypt and encrypt keys
-	initialDecrytKey  []byte
-	initialEncryptKey []byte
+
+	licenseMacSaltKey    []byte
+	licenseEncryptionKey []byte
 
 	fastPathListener core.FastPathListener
 	channelSender    core.ChannelSender
@@ -522,12 +408,6 @@ func (c *Client) connect(clientData []any, serverData []any, userId uint16, chan
 			//break
 		}
 	}
-	c.enableEncryption = c.ClientCoreData().ServerSelectedProtocol == 0
-
-	if c.enableEncryption {
-		c.sendClientRandom()
-	}
-
 	c.sendInfoPkt()
 	c.transport.Once("sec", c.recvLicenceInfo)
 }
@@ -547,26 +427,6 @@ func (c *Client) serverCoreData() *gcc.ServerCoreData {
 }
 func (c *Client) ServerSecurityData() *gcc.ServerSecurityData {
 	return c.serverData[1].(*gcc.ServerSecurityData)
-}
-
-/*
-@summary: generate 40 bits data from 128 bits data
-@param data: {str} 128 bits data
-@return: {str} 40 bits data
-@see: http://msdn.microsoft.com/en-us/library/cc240785.aspx
-*/
-func gen40bits(data []byte) []byte {
-	return append([]byte("\xd1\x26\x9e"), data[3:8]...)
-}
-
-/*
-@summary: generate 56 bits data from 128 bits data
-@param data: {str} 128 bits data
-@return: {str} 56 bits data
-@see: http://msdn.microsoft.com/en-us/library/cc240785.aspx
-*/
-func gen56bits(data []byte) []byte {
-	return append([]byte("\xd1"), data[1:8]...)
 }
 
 /*
@@ -627,102 +487,10 @@ func masterSecret(secret, random1, random2 []byte) []byte {
 	return ms.Bytes()
 }
 
-/*
-@summary: Generate master secret
-@param secret: secret
-@param clientRandom : client random
-@param serverRandom : server random
-*/
-func sessionKeyBlob(secret, random1, random2 []byte) []byte {
-	sh1 := saltedHash([]byte("X"), secret, random1, random2)
-	sh2 := saltedHash([]byte("YY"), secret, random1, random2)
-	sh3 := saltedHash([]byte("ZZZ"), secret, random1, random2)
-	ms := bytes.NewBuffer(nil)
-	ms.Write(sh1)
-	ms.Write(sh2)
-	ms.Write(sh3)
-	return ms.Bytes()
-
-}
-func generateKeys(clientRandom, serverRandom []byte, method uint32) ([]byte, []byte, []byte) {
-	b := &bytes.Buffer{}
-	b.Write(clientRandom[:24])
-	b.Write(serverRandom[:24])
-	preMasterHash := b.Bytes()
-	slog.Debug("getnerateKeys", "method", method)
-
-	masterHash := masterSecret(preMasterHash, clientRandom, serverRandom)
-	sessionKey := sessionKeyBlob(masterHash, clientRandom, serverRandom)
-	macKey128 := sessionKey[:16]
-	initialFirstKey128 := finalHash(sessionKey[16:32], clientRandom, serverRandom)
-	initialSecondKey128 := finalHash(sessionKey[32:48], clientRandom, serverRandom)
-
-	//generate valid key
-	if method == gcc.ENCRYPTION_FLAG_40BIT {
-		return gen40bits(macKey128), gen40bits(initialFirstKey128), gen40bits(initialSecondKey128)
-	} else if method == gcc.ENCRYPTION_FLAG_56BIT {
-		return gen56bits(macKey128), gen56bits(initialFirstKey128), gen56bits(initialSecondKey128)
-	}
-	// method == gcc.ENCRYPTION_FLAG_128BIT
-	return macKey128, initialFirstKey128, initialSecondKey128
-
-}
-
-type ClientSecurityExchangePDU struct {
-	Length                uint32 `struc:"little"`
-	EncryptedClientRandom []byte `struc:"little"`
-	Padding               []byte `struc:"[8]byte"`
-}
-
-func (e *ClientSecurityExchangePDU) serialize() []byte {
-	buff := &bytes.Buffer{}
-	core.WriteUInt32LE(e.Length, buff)
-	core.WriteBytes(e.EncryptedClientRandom, buff)
-	core.WriteBytes(e.Padding, buff)
-
-	return buff.Bytes()
-}
-func (c *Client) sendClientRandom() {
-	clientRandom := core.Random(32)
-	slog.Debug("sendClientRandom", "clientRandom", core.Hex(clientRandom))
-
-	serverRandom := c.ServerSecurityData().ServerRandom
-	slog.Debug("sendlientRandom", "ServerRandom", core.Hex(serverRandom))
-
-	c.macKey, c.initialDecrytKey, c.initialEncryptKey = generateKeys(clientRandom,
-		serverRandom, c.ServerSecurityData().EncryptionMethod)
-
-	//initialize keys
-	c.currentDecrytKey = c.initialDecrytKey
-	c.currentEncryptKey = c.initialEncryptKey
-
-	//verify certificate
-	if !c.ServerSecurityData().ServerCertificate.CertData.Verify() {
-		slog.Warn("Cannot verify server identity")
-	}
-
-	serverPubKey, _ := c.ServerSecurityData().ServerCertificate.CertData.GetPublicKey()
-	ret, err := rsa.EncryptPKCS1v15(rand.Reader, serverPubKey, core.Reverse(clientRandom))
-	if err != nil {
-		slog.Error("sendlientRandom", "err", err)
-	}
-	message := ClientSecurityExchangePDU{}
-	message.EncryptedClientRandom = core.Reverse(ret)
-	message.Length = uint32(len(message.EncryptedClientRandom) + 8)
-	message.Padding = make([]byte, 8)
-
-	slog.Debug("sendlientRandom", "message", message)
-
-	c.sendFlagged(EXCHANGE_PKT, message.serialize())
-}
 func (c *Client) sendInfoPkt() {
-	var secFlag uint16 = INFO_PKT
-	if c.enableEncryption {
-		secFlag |= ENCRYPT
-	}
-
-	slog.Debug("sendInfoPkt", "secFlag", secFlag, "hasExtended", c.ClientCoreData().RdpVersion >= gcc.RDP_VERSION_5_PLUS)
-	c.sendFlagged(secFlag, c.info.Serialize(c.ClientCoreData().RdpVersion >= gcc.RDP_VERSION_5_PLUS))
+	extended := c.ClientCoreData().RdpVersion >= gcc.RDP_VERSION_5_PLUS
+	slog.Debug("sendInfoPkt", "hasExtended", extended)
+	c.sendFlagged(INFO_PKT, c.info.Serialize(extended))
 }
 
 func (c *Client) recvLicenceInfo(channel string, s []byte) {
@@ -792,8 +560,8 @@ func (c *Client) sendClientNewLicenseRequest(data []byte) {
 	preMasterSecret := core.Random(48)
 	masSecret := masterSecret(preMasterSecret, clientRandom, serverRandom)
 	sessionKeyBlob := masterSecret(masSecret, serverRandom, clientRandom)
-	c.macKey = sessionKeyBlob[:16]
-	c.initialDecrytKey = finalHash(sessionKeyBlob[16:32], clientRandom, serverRandom)
+	c.licenseMacSaltKey = sessionKeyBlob[:16]
+	c.licenseEncryptionKey = finalHash(sessionKeyBlob[16:32], clientRandom, serverRandom)
 
 	//format message
 	message := &lic.ClientNewLicenseRequest{}
@@ -845,7 +613,7 @@ func (c *Client) sendClientChallengeResponse(data []byte) {
 	serverEncryptedChallenge := pc.EncryptedPlatformChallenge.BlobData
 	//decrypt server challenge
 	//it should be TEST word in unicode format
-	rc, _ := rc4.NewCipher(c.initialDecrytKey)
+	rc, _ := rc4.NewCipher(c.licenseEncryptionKey)
 	serverChallenge := make([]byte, 20)
 	rc.XORKeyStream(serverChallenge, serverEncryptedChallenge)
 	//if serverChallenge != "T\x00E\x00S\x00T\x00\x00\x00":
@@ -870,15 +638,14 @@ func (c *Client) sendClientChallengeResponse(data []byte) {
 	message := &lic.ClientPLatformChallengeResponse{}
 	message.EncryptedPlatformChallengeResponse.BlobData = serverEncryptedChallenge
 	message.EncryptedHWID.BlobData = encryptedHWID
-	message.MACData = macData(c.macKey, b.Bytes())[:16]
+	message.MACData = macData(c.licenseMacSaltKey, b.Bytes())[:16]
 
 	b.Reset()
 	struc.Pack(b, message)
 	c.sendFlagged(LICENSE_PKT, b.Bytes())
 }
 
-func (c *Client) recvData(channel string, s []byte) {
-	data := c.decrytData(s)
+func (c *Client) recvData(channel string, data []byte) {
 	if channel != t125.GLOBAL_CHANNEL_NAME {
 		c.Emit("channel", channel, data)
 		return
@@ -890,11 +657,7 @@ func (c *Client) SetFastPathListener(f core.FastPathListener) {
 }
 
 func (c *Client) RecvFastPath(secFlag byte, s []byte) {
-	data := s
-	if c.enableEncryption && secFlag&FASTPATH_OUTPUT_ENCRYPTED != 0 {
-		data = c.readEncryptedPayload(s, secFlag&FASTPATH_OUTPUT_SECURE_CHECKSUM != 0)
-	}
-	c.fastPathListener.RecvFastPath(secFlag, data)
+	c.fastPathListener.RecvFastPath(secFlag, s)
 }
 
 func (c *Client) SetChannelSender(f core.ChannelSender) {
@@ -902,18 +665,5 @@ func (c *Client) SetChannelSender(f core.ChannelSender) {
 }
 
 func (c *Client) SendToChannel(channel string, b []byte) (int, error) {
-	if !c.enableEncryption {
-		return c.channelSender.SendToChannel(channel, b)
-	}
-	var flag uint16 = ENCRYPT
-	if c.enableSecureCheckSum {
-		flag |= SECURE_CHECKSUM
-	}
-	data := c.writeEncryptedPayload(b, c.enableSecureCheckSum)
-
-	buff := &bytes.Buffer{}
-	core.WriteUInt16LE(flag, buff)
-	core.WriteUInt16LE(0, buff)
-	core.WriteBytes(data, buff)
-	return c.channelSender.SendToChannel(channel, buff.Bytes())
+	return c.channelSender.SendToChannel(channel, b)
 }

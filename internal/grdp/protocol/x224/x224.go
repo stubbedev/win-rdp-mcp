@@ -193,7 +193,7 @@ func New(t core.Transport) *X224 {
 	x := &X224{
 		Emitter:           *emission.NewEmitter(),
 		transport:         t,
-		requestedProtocol: PROTOCOL_RDP | PROTOCOL_SSL | PROTOCOL_HYBRID,
+		requestedProtocol: PROTOCOL_SSL | PROTOCOL_HYBRID,
 		selectedProtocol:  PROTOCOL_SSL,
 		dataHeader:        NewDataHeader(),
 	}
@@ -227,10 +227,6 @@ func (x *X224) Write(b []byte) (n int, err error) {
 
 func (x *X224) Close() error {
 	return x.transport.Close()
-}
-
-func (x *X224) SetRequestedProtocol(p uint32) {
-	x.requestedProtocol = p
 }
 
 func (x *X224) SetUsername(username string) {
@@ -305,20 +301,14 @@ func (x *X224) recvConnectionConfirm(s []byte) {
 		x.selectedProtocol = PROTOCOL_RDP
 	}
 
-	if x.selectedProtocol == PROTOCOL_HYBRID_EX {
-		err := errors.New("NODE_RDP_PROTOCOL_HYBRID_EX_NOT_SUPPORTED")
+	if err := x.checkSelectedProtocol(); err != nil {
 		slog.Error(err.Error())
 		x.Emit("error", err)
+		x.Close()
 		return
 	}
 
 	x.transport.On("data", x.recvData)
-
-	if x.selectedProtocol == PROTOCOL_RDP {
-		slog.Debug("*** RDP security selected ***")
-		x.Emit("connect", x.selectedProtocol)
-		return
-	}
 
 	if x.selectedProtocol == PROTOCOL_SSL {
 		slog.Debug("*** SSL security selected ***")
@@ -343,6 +333,18 @@ func (x *X224) recvConnectionConfirm(s []byte) {
 		x.Emit("connect", x.selectedProtocol)
 		return
 	}
+}
+
+var ErrStandardRDPSecurity = errors.New("the RDP server offers only Standard RDP Security, which sends the password under RC4 to an unauthenticated server; enable TLS or Network Level Authentication on the target")
+
+func (x *X224) checkSelectedProtocol() error {
+	if x.selectedProtocol == PROTOCOL_RDP {
+		return ErrStandardRDPSecurity
+	}
+	if x.selectedProtocol&x.requestedProtocol != x.selectedProtocol {
+		return fmt.Errorf("the RDP server selected security protocol %#x, which was not offered (offered %#x)", x.selectedProtocol, x.requestedProtocol)
+	}
+	return nil
 }
 
 func (x *X224) recvData(s []byte) {
