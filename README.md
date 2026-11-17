@@ -238,7 +238,7 @@ Builds are pushed to a public binary cache. Add `--accept-flake-config`, or put
 these in your `nix.conf`:
 
 ```
-extra-substituters = https://nix.stubbe.dev/default
+extra-substituters = https://xilos.dev/c/stubbedev/main
 extra-trusted-public-keys = default:9P4FePqHV1rGv5NDBun0GN26y83pcaaMr/NHZrxKaac=
 ```
 
