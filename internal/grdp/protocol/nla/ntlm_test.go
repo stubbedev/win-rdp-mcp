@@ -2,6 +2,7 @@ package nla_test
 
 import (
 	"bytes"
+	"crypto/rc4"
 	"encoding/binary"
 	"encoding/hex"
 	"log/slog"
@@ -106,9 +107,9 @@ func TestAuthenticateDoesNotLogSessionKeys(t *testing.T) {
 
 	ntlm := nla.NewNTLMv2("DOM", "user", "Tr0ub4dor&3")
 	ntlm.GetNegotiateMessage()
-	auth, sec := ntlm.GetAuthenticateMessage(validChallenge())
-	if auth == nil || sec == nil {
-		t.Fatal("a well-formed challenge was rejected")
+	_, sec, err := ntlm.GetAuthenticateMessage(validChallenge())
+	if err != nil {
+		t.Fatalf("a well-formed challenge was rejected: %v", err)
 	}
 	out := logs.String()
 	for _, key := range [][]byte{sec.SigningKey, sec.VerifyKey} {
@@ -118,5 +119,116 @@ func TestAuthenticateDoesNotLogSessionKeys(t *testing.T) {
 	}
 	if strings.Contains(out, "Tr0ub4dor&3") {
 		t.Errorf("the password reached the log:\n%s", out)
+	}
+}
+
+func TestAuthenticateRejectsTargetInfoOutsideTheChallenge(t *testing.T) {
+	setOffset := func(off uint32) func([]byte) {
+		return func(b []byte) { binary.LittleEndian.PutUint32(b[44:], off) }
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte)
+	}{
+		{"offset before the payload", setOffset(8)},
+		{"offset past the end", setOffset(1 << 20)},
+		{"offset wrapping uint32", setOffset(0xffffffff)},
+		{"length past the end", func(b []byte) { binary.LittleEndian.PutUint16(b[40:], 0xffff) }},
+	} {
+		msg := validChallenge()
+		tc.mutate(msg)
+		ntlm := nla.NewNTLMv2("DOM", "user", "pass")
+		ntlm.GetNegotiateMessage()
+		if _, _, err := ntlm.GetAuthenticateMessage(msg); err == nil || !strings.Contains(err.Error(), "target info") {
+			t.Errorf("%s: err = %v, want a target-info bounds error", tc.name, err)
+		}
+	}
+}
+
+func TestAuthenticateRejectsMalformedTargetInfo(t *testing.T) {
+	name := core.UnicodeEncode("TARGET")
+	for _, tc := range []struct {
+		name string
+		info []byte
+	}{
+		{"short timestamp", avPairs(avPair(nla.MsvAvTimestamp, []byte{1, 2, 3}))},
+		{"truncated AV pair", []byte{byte(nla.MsvAvNbComputerName), 0, 40, 0, 'x'}},
+	} {
+		ntlm := nla.NewNTLMv2("DOM", "user", "pass")
+		ntlm.GetNegotiateMessage()
+		if _, _, err := ntlm.GetAuthenticateMessage(challengeMessage(name, tc.info)); err == nil {
+			t.Errorf("%s: accepted", tc.name)
+		}
+	}
+}
+
+func TestAuthenticateRejectsATruncatedChallenge(t *testing.T) {
+	ntlm := nla.NewNTLMv2("DOM", "user", "pass")
+	ntlm.GetNegotiateMessage()
+	if _, _, err := ntlm.GetAuthenticateMessage(validChallenge()[:20]); err == nil {
+		t.Error("a truncated challenge was accepted")
+	}
+}
+
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func sealingPair(t *testing.T, sealKey, signKey []byte) (*nla.NTLMv2Security, *nla.NTLMv2Security) {
+	t.Helper()
+	enc, err := rc4.NewCipher(sealKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := rc4.NewCipher(sealKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &nla.NTLMv2Security{EncryptRC4: enc, SigningKey: signKey}, &nla.NTLMv2Security{DecryptRC4: dec, VerifyKey: signKey}
+}
+
+func TestGssEncryptMatchesTheMSNLMPExample(t *testing.T) {
+	client, _ := sealingPair(t, mustHex(t, "59f600973cc4960a25480a7c196e4c58"), mustHex(t, "4788dc861b4782f35d43fd98fe1a2d39"))
+	got, err := client.GssEncrypt(mustHex(t, "50006c00610069006e007400650078007400"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "010000007fb38ec5c55d497600000000" + "54e50165bf1936dc996020c1811b0f06fb5f"
+	if hex.EncodeToString(got) != want {
+		t.Errorf("GssEncrypt = %x, want %s", got, want)
+	}
+}
+
+func TestGssRoundTripAndTamperDetection(t *testing.T) {
+	sealKey, signKey := mustHex(t, "00112233445566778899aabbccddeeff"), mustHex(t, "ffeeddccbbaa99887766554433221100")
+	sender, receiver := sealingPair(t, sealKey, signKey)
+	sealed, err := sender.GssEncrypt([]byte("credentials"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := receiver.GssDecrypt(sealed); string(got) != "credentials" {
+		t.Fatalf("GssDecrypt = %q", got)
+	}
+
+	sender, receiver = sealingPair(t, sealKey, signKey)
+	sealed, _ = sender.GssEncrypt([]byte("credentials"))
+	sealed[len(sealed)-1] ^= 1
+	if got := receiver.GssDecrypt(sealed); got != nil {
+		t.Errorf("a tampered message unsealed to %q", got)
+	}
+	if got := receiver.GssDecrypt(sealed[:10]); got != nil {
+		t.Errorf("a truncated message unsealed to %q", got)
+	}
+}
+
+func TestGssEncryptRejectsOversizedMessages(t *testing.T) {
+	sender, _ := sealingPair(t, make([]byte, 16), make([]byte, 16))
+	if _, err := sender.GssEncrypt(make([]byte, 1<<16+1)); err == nil {
+		t.Error("an oversized message was sealed")
 	}
 }

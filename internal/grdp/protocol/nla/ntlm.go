@@ -2,6 +2,7 @@ package nla
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/md5"
 	"crypto/rc4"
 	"encoding/binary"
@@ -159,36 +160,38 @@ func (m *ChallengeMessage) BaseLen() uint32 {
 	return uint32(m.totalLen - len(m.Payload))
 }
 
-func (m *ChallengeMessage) getTargetInfo() []byte {
+func (m *ChallengeMessage) getTargetInfo() ([]byte, error) {
 	if m.TargetInfoLen == 0 {
-		return make([]byte, 0)
+		return []byte{}, nil
 	}
-	offset := m.BaseLen()
-	start := m.TargetInfoBufferOffset - offset
-	return m.Payload[start : start+uint32(m.TargetInfoLen)]
-}
-func (m *ChallengeMessage) getTargetName() []byte {
-	if m.TargetNameLen == 0 {
-		return make([]byte, 0)
+	base := uint64(m.BaseLen())
+	offset := uint64(m.TargetInfoBufferOffset)
+	end := offset + uint64(m.TargetInfoLen)
+	if offset < base || end-base > uint64(len(m.Payload)) {
+		return nil, fmt.Errorf("NTLM challenge: target info at offset %d, length %d lies outside the %d-byte message",
+			offset, m.TargetInfoLen, m.totalLen)
 	}
-	offset := m.BaseLen()
-	start := m.TargetNameBufferOffset - offset
-	return m.Payload[start : start+uint32(m.TargetNameLen)]
+	return m.Payload[offset-base : end-base], nil
 }
-func (m *ChallengeMessage) getTargetInfoTimestamp(data []byte) []byte {
-	r := bytes.NewReader(data)
+
+func getTargetInfoTimestamp(targetInfo []byte) ([]byte, error) {
+	r := bytes.NewReader(targetInfo)
 	for r.Len() > 0 {
 		avPair := &AVPair{}
-		struc.Unpack(r, avPair)
-		if avPair.Id == MsvAvTimestamp {
-			return avPair.Value
+		if err := struc.Unpack(r, avPair); err != nil {
+			return nil, fmt.Errorf("NTLM challenge: malformed target info AV pair: %w", err)
 		}
-
-		if avPair.Id == MsvAvEOL {
-			break
+		switch avPair.Id {
+		case MsvAvTimestamp:
+			if len(avPair.Value) != 8 {
+				return nil, fmt.Errorf("NTLM challenge: timestamp AV pair is %d bytes, want 8", len(avPair.Value))
+			}
+			return avPair.Value, nil
+		case MsvAvEOL:
+			return nil, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 type AuthenticateMessage struct {
@@ -368,22 +371,18 @@ var (
 	serverSealing = concat([]byte("session key to server-to-client sealing key magic constant"), []byte{0x00})
 )
 
-func (n *NTLMv2) GetAuthenticateMessage(s []byte) (*AuthenticateMessage, *NTLMv2Security) {
+func (n *NTLMv2) GetAuthenticateMessage(s []byte) (*AuthenticateMessage, *NTLMv2Security, error) {
 	slog.Debug("GetAuthenticateMessage", "s", s)
 
 	challengeMsg := &ChallengeMessage{totalLen: len(s)}
 	r := bytes.NewReader(s)
-	err := struc.Unpack(r, challengeMsg)
-	if err != nil {
-		slog.Error("GetAuthenticateMessage", "err", err)
-		return nil, nil
+	if err := struc.Unpack(r, challengeMsg); err != nil {
+		return nil, nil, fmt.Errorf("NTLM challenge: decoding the header: %w", err)
 	}
 	if challengeMsg.NegotiateFlags&NTLMSSP_NEGOTIATE_VERSION != 0 {
 		version := NVersion{}
-		err := struc.Unpack(r, &version)
-		if err != nil {
-			slog.Error("GetAuthenticateMessage", "err", err)
-			return nil, nil
+		if err := struc.Unpack(r, &version); err != nil {
+			return nil, nil, fmt.Errorf("NTLM challenge: decoding the version: %w", err)
 		}
 		challengeMsg.Version = version
 	}
@@ -391,9 +390,14 @@ func (n *NTLMv2) GetAuthenticateMessage(s []byte) (*AuthenticateMessage, *NTLMv2
 	n.challengeMessage = challengeMsg
 	slog.Debug("GetAuthenticateMessage", "challengeMsg", challengeMsg)
 
-	serverName := challengeMsg.getTargetName()
-	serverInfo := challengeMsg.getTargetInfo()
-	timestamp := challengeMsg.getTargetInfoTimestamp(serverInfo)
+	serverInfo, err := challengeMsg.getTargetInfo()
+	if err != nil {
+		return nil, nil, err
+	}
+	timestamp, err := getTargetInfoTimestamp(serverInfo)
+	if err != nil {
+		return nil, nil, err
+	}
 	computeMIC := false
 	if timestamp == nil {
 		ft := uint64(time.Now().UnixNano()) / 100
@@ -403,7 +407,6 @@ func (n *NTLMv2) GetAuthenticateMessage(s []byte) (*AuthenticateMessage, *NTLMv2
 	} else {
 		computeMIC = true
 	}
-	slog.Debug("GetAuthenticateMessage", "serverName", core.UnicodeDecode(serverName))
 	serverChallenge := challengeMsg.ServerChallenge[:]
 	clientChallenge := core.Random(8)
 	ntChallengeResponse, lmChallengeResponse, SessionBaseKey := n.ComputeResponseV2(
@@ -411,9 +414,7 @@ func (n *NTLMv2) GetAuthenticateMessage(s []byte) (*AuthenticateMessage, *NTLMv2
 
 	exchangeKey := SessionBaseKey
 	exportedSessionKey := core.Random(16)
-	EncryptedRandomSessionKey := make([]byte, len(exportedSessionKey))
-	rc, _ := rc4.NewCipher(exchangeKey)
-	rc.XORKeyStream(EncryptedRandomSessionKey, exportedSessionKey)
+	EncryptedRandomSessionKey := RC4K(exchangeKey, exportedSessionKey)
 
 	if challengeMsg.NegotiateFlags&NTLMSSP_NEGOTIATE_UNICODE != 0 {
 		n.enableUnicode = true
@@ -454,7 +455,7 @@ func (n *NTLMv2) GetAuthenticateMessage(s []byte) (*AuthenticateMessage, *NTLMv2
 
 	ntlmSec := &NTLMv2Security{encryptRC4, decryptRC4, ClientSigningKey, ServerSigningKey, 0}
 
-	return n.authenticateMessage, ntlmSec
+	return n.authenticateMessage, ntlmSec, nil
 }
 
 func (n *NTLMv2) GetEncodedCredentials() ([]byte, []byte, []byte) {
@@ -472,52 +473,45 @@ type NTLMv2Security struct {
 	SeqNum     uint32
 }
 
-func (n *NTLMv2Security) GssEncrypt(s []byte) []byte {
-	p := make([]byte, len(s))
-	n.EncryptRC4.XORKeyStream(p, s)
+const (
+	gssHeaderLen        = 16
+	gssChecksumLen      = 8
+	maxGssMessageLen    = 1 << 16
+	gssSignatureVersion = 1
+)
 
-	// HMAC input: SeqNum(4) + plaintext
-	sigInput := make([]byte, 4+len(s))
-	binary.LittleEndian.PutUint32(sigInput, n.SeqNum)
-	copy(sigInput[4:], s)
-	s1 := HMAC_MD5(n.SigningKey, sigInput)[:8]
+func gssChecksum(key []byte, seqNum uint32, plaintext []byte) []byte {
+	var seq [4]byte
+	binary.LittleEndian.PutUint32(seq[:], seqNum)
+	mac := hmac.New(md5.New, key)
+	mac.Write(seq[:])
+	mac.Write(plaintext)
+	return mac.Sum(nil)[:gssChecksumLen]
+}
 
-	checksum := make([]byte, 8)
-	n.EncryptRC4.XORKeyStream(checksum, s1)
-
-	// Output: version(4) + checksum(8) + SeqNum(4) + encrypted(len(p))
-	out := make([]byte, 16+len(p))
-	binary.LittleEndian.PutUint32(out[0:], 0x00000001)
-	copy(out[4:], checksum)
+func (n *NTLMv2Security) GssEncrypt(s []byte) ([]byte, error) {
+	if len(s) > maxGssMessageLen {
+		return nil, fmt.Errorf("NTLM seal: %d-byte message exceeds the %d-byte limit", len(s), maxGssMessageLen)
+	}
+	out := make([]byte, gssHeaderLen+len(s))
+	binary.LittleEndian.PutUint32(out[0:], gssSignatureVersion)
+	n.EncryptRC4.XORKeyStream(out[gssHeaderLen:], s)
+	n.EncryptRC4.XORKeyStream(out[4:4+gssChecksumLen], gssChecksum(n.SigningKey, n.SeqNum, s))
 	binary.LittleEndian.PutUint32(out[12:], n.SeqNum)
-	copy(out[16:], p)
-
 	n.SeqNum++
-	return out
+	return out, nil
 }
 
 func (n *NTLMv2Security) GssDecrypt(s []byte) []byte {
-	if len(s) < 16 {
+	if len(s) < gssHeaderLen {
 		return nil
 	}
-	// s[0:4] = version (ignored), s[4:12] = checksum, s[12:16] = seqNum, s[16:] = data
-	checksum := s[4:12]
 	seqNum := binary.LittleEndian.Uint32(s[12:16])
-	data := s[16:]
-
-	p := make([]byte, len(data))
-	n.DecryptRC4.XORKeyStream(p, data)
-
-	check := make([]byte, 8)
-	n.DecryptRC4.XORKeyStream(check, checksum)
-
-	// HMAC input: seqNum(4) + decrypted(len(p))
-	verifyInput := make([]byte, 4+len(p))
-	binary.LittleEndian.PutUint32(verifyInput, seqNum)
-	copy(verifyInput[4:], p)
-	verify := HMAC_MD5(n.VerifyKey, verifyInput)[:8]
-
-	if !bytes.Equal(verify, check) {
+	p := make([]byte, len(s)-gssHeaderLen)
+	n.DecryptRC4.XORKeyStream(p, s[gssHeaderLen:])
+	check := make([]byte, gssChecksumLen)
+	n.DecryptRC4.XORKeyStream(check, s[4:4+gssChecksumLen])
+	if !hmac.Equal(gssChecksum(n.VerifyKey, seqNum, p), check) {
 		return nil
 	}
 	return p

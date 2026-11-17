@@ -2,6 +2,7 @@ package tpkt
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -189,14 +190,25 @@ func (t *TPKT) recvChallenge(data []byte) error {
 		return err
 	}
 	slog.Debug("recvChallenge", "tsreq", tsreq)
-	// get pubkey
 	pubkey, err := t.Conn.TlsPubKey()
+	if err != nil {
+		return fmt.Errorf("reading the TLS public key for CredSSP: %w", err)
+	}
 	slog.Debug("recvChallenge", "pubkey", core.Hex(pubkey))
+	if len(tsreq.NegoTokens) == 0 {
+		return errors.New("CredSSP: the server's TSRequest carries no NTLM challenge")
+	}
 
-	authMsg, ntlmSec := t.ntlm.GetAuthenticateMessage(tsreq.NegoTokens[0].Data)
+	authMsg, ntlmSec, err := t.ntlm.GetAuthenticateMessage(tsreq.NegoTokens[0].Data)
+	if err != nil {
+		return err
+	}
 	t.ntlmSec = ntlmSec
 
-	encryptPubkey := ntlmSec.GssEncrypt(pubkey)
+	encryptPubkey, err := ntlmSec.GssEncrypt(pubkey)
+	if err != nil {
+		return fmt.Errorf("sealing the TLS public key for CredSSP: %w", err)
+	}
 	req := nla.EncodeDERTRequest([]nla.Message{authMsg}, nil, encryptPubkey)
 	slog.Debug("recvChallenge", "send", core.Hex(req), "len", len(req))
 	_, err = t.Conn.Write(req)
@@ -229,7 +241,10 @@ func (t *TPKT) recvPubKeyInc(data []byte) error {
 	slog.Debug("GssDecrypy", "pubkey", core.Hex(pubkey))
 	domain, username, password := t.ntlm.GetEncodedCredentials()
 	credentials := nla.EncodeDERTCredentials(domain, username, password)
-	authInfo := t.ntlmSec.GssEncrypt(credentials)
+	authInfo, err := t.ntlmSec.GssEncrypt(credentials)
+	if err != nil {
+		return fmt.Errorf("sealing the CredSSP credentials: %w", err)
+	}
 	req := nla.EncodeDERTRequest(nil, authInfo, nil)
 	_, err = t.Conn.Write(req)
 	if err != nil {
