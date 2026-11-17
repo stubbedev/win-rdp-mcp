@@ -17,7 +17,7 @@ import (
 )
 
 type e2eTarget struct {
-	host, user, passFile string
+	host, user, passFile, certSHA256 string
 }
 
 func e2eTargetFromEnv(t *testing.T) e2eTarget {
@@ -26,6 +26,8 @@ func e2eTargetFromEnv(t *testing.T) e2eTarget {
 		host:     os.Getenv("WIN_RDP_E2E_TARGET"),
 		user:     os.Getenv("WIN_RDP_E2E_USER"),
 		passFile: os.Getenv("WIN_RDP_E2E_PASS_FILE"),
+
+		certSHA256: os.Getenv("WIN_RDP_E2E_TLS_CERT_SHA256"),
 	}
 	if target.host == "" || target.user == "" || target.passFile == "" {
 		t.Skip("set WIN_RDP_E2E_TARGET, WIN_RDP_E2E_USER and WIN_RDP_E2E_PASS_FILE to run against a Windows machine")
@@ -94,8 +96,12 @@ func TestEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	agent := buildAgent(t, dir)
 
-	cmd := exec.Command(os.Args[0], "control", "--target", target.host, "--user", target.user,
-		"--pass-file", target.passFile, "--agent-exe", agent, "--enable-all")
+	args := []string{"control", "--target", target.host, "--user", target.user,
+		"--pass-file", target.passFile, "--agent-exe", agent, "--enable-all"}
+	if target.certSHA256 != "" {
+		args = append(args, "--tls-cert-sha256", target.certSHA256)
+	}
+	cmd := exec.Command(os.Args[0], args...)
 	cmd.Env = append(os.Environ(), smokeServerEnv+"=1")
 	client := mcp.NewClient(&mcp.Implementation{Name: "e2e", Version: "0"}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

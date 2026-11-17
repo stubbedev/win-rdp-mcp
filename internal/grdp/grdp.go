@@ -68,6 +68,7 @@ func (s *stubChannel) Process(data []byte)         {}
 
 type RdpClient struct {
 	hostPort        string // ip:port
+	trust           core.ServerTrust
 	width           int
 	height          int
 	kbdLayout       uint32
@@ -347,9 +348,10 @@ func (bm *Bitmap) FillBGRA(dst []byte) []byte {
 	return dst
 }
 
-func NewRdpClient(host string, width, height int, dialer func(string) (net.Conn, error)) *RdpClient {
+func NewRdpClient(host string, width, height int, trust core.ServerTrust, dialer func(string) (net.Conn, error)) *RdpClient {
 	g := &RdpClient{
 		hostPort:        host,
+		trust:           trust,
 		width:           width,
 		height:          height,
 		kbdLayout:       uint32(gcc.US),
@@ -479,11 +481,11 @@ func (g *RdpClient) Login(domain string, user string, password string) error {
 func (g *RdpClient) doLogin(routingToken []byte) error {
 	conn, err := g.dialer(g.hostPort)
 	if err != nil {
-		return fmt.Errorf("[dial err] %v", err)
+		return fmt.Errorf("[dial err] %w", err)
 	}
 
 	host, _, _ := net.SplitHostPort(g.hostPort)
-	g.tpkt = tpkt.New(core.NewSocketLayer(conn, host), nla.NewNTLMv2(g.domain, g.user, g.password))
+	g.tpkt = tpkt.New(core.NewSocketLayer(conn, host, g.trust), nla.NewNTLMv2(g.domain, g.user, g.password))
 	g.x224 = x224.New(g.tpkt)
 	g.mcs = t125.NewMCSClient(g.x224, g.kbdLayout, g.keyboardType, g.keyboardSubType)
 	g.sec = sec.NewClient(g.mcs)
@@ -616,7 +618,7 @@ func (g *RdpClient) doLogin(routingToken []byte) error {
 
 	err = g.x224.Connect()
 	if err != nil {
-		return fmt.Errorf("[x224 connect err] %v", err)
+		return fmt.Errorf("[x224 connect err] %w", err)
 	}
 
 	// Wait for the RDP handshake to complete or fail.
@@ -681,7 +683,7 @@ func (g *RdpClient) doLogin(routingToken []byte) error {
 	case r := <-ch:
 		if r.err != nil {
 			g.tpkt.Close()
-			return fmt.Errorf("[connection err] %v", r.err)
+			return fmt.Errorf("[connection err] %w", r.err)
 		}
 		if r.redirect != nil {
 			slog.Debug("Server redirect", "loadBalanceInfo", string(r.redirect.LoadBalanceInfo))

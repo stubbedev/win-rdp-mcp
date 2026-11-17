@@ -56,7 +56,8 @@ smoke:
     go test -count=1 -run TestStdioSmoke .
 
 # End-to-end against a real Windows machine (a dockur/windows VM works):
-#   WIN_RDP_E2E_TARGET=127.0.0.1:3389 WIN_RDP_E2E_USER=me WIN_RDP_E2E_PASS_FILE=pass just e2e
+#   WIN_RDP_E2E_TARGET=127.0.0.1:3389 WIN_RDP_E2E_USER=me WIN_RDP_E2E_PASS_FILE=pass \
+#   WIN_RDP_E2E_TLS_CERT_SHA256=<the VM's RDP certificate fingerprint> just e2e
 e2e:
     go test -tags e2e -count=1 -v -run TestEndToEnd -timeout 20m .
 

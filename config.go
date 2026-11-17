@@ -46,6 +46,9 @@ type TargetConfig struct {
 	Height   int    `toml:"height"`
 	AgentExe string `toml:"agent_exe"`
 	NoAgent  bool   `toml:"no_agent"`
+
+	TLSCertSHA256 string `toml:"tls_cert_sha256"`
+	TLSSkipVerify bool   `toml:"tls_skip_verify"`
 }
 
 func (t TargetConfig) validate(path string, mode fs.FileMode) error {

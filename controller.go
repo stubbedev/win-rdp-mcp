@@ -17,6 +17,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/pflag"
+	"github.com/stubbedev/win-rdp-mcp/internal/grdp/core"
 )
 
 var desktopTools = map[string]bool{
@@ -26,6 +27,7 @@ var desktopTools = map[string]bool{
 
 type controlOptions struct {
 	host, user, domain, pass string
+	trust                    core.ServerTrust
 	size                     sessionSize
 	agentExe                 string
 	noAgent                  bool
@@ -54,6 +56,8 @@ func parseControlOptions(argv []string) (controlOptions, error) {
 		height      = fs.IntP("height", "H", 800, "session height in pixels")
 		agentExe    = fs.String("agent-exe", "", "path to the Windows agent binary to push (default: win-rdp-mcp.exe next to this binary, else ./win-rdp-mcp.exe)")
 		noAgent     = fs.Bool("no-agent", false, "desktop tools only; do not push the in-session agent")
+		tlsPin      = fs.String("tls-cert-sha256", "", "trust only the RDP server TLS certificate with this SHA-256 fingerprint (hex)")
+		tlsSkip     = fs.Bool("tls-skip-verify", false, "accept any RDP server TLS certificate (insecure: exposes the password to a man in the middle)")
 		configPath  = fs.StringP("config", "c", "", "path to "+configFileName)
 		debug       = fs.BoolP("debug", "d", false, "log RDP and bootstrap detail to stderr")
 		enableAll   = fs.BoolP("enable-all", "a", false, "enable every tool, including destructive tier 3")
@@ -85,6 +89,13 @@ func parseControlOptions(argv []string) (controlOptions, error) {
 		return controlOptions{}, fmt.Errorf("no target: pass --target and --user, or set host and user under [target] in ~/.config/win-rdp-mcp/%s", configFileName)
 	}
 	if opts.pass, err = resolvePassword(*passFile, t); err != nil {
+		return controlOptions{}, err
+	}
+	opts.trust, err = resolveServerTrust(
+		pick(inFile("tls_cert_sha256"), t.TLSCertSHA256, "", explicit["tls-cert-sha256"], *tlsPin),
+		pickBool(inFile("tls_skip_verify"), t.TLSSkipVerify, explicit["tls-skip-verify"], *tlsSkip),
+	)
+	if err != nil {
 		return controlOptions{}, err
 	}
 
@@ -125,7 +136,7 @@ func controlMain(argv []string) error {
 
 	sess := &rdpSession{
 		host: withDefaultPort(opts.host), user: opts.user, domain: opts.domain, pass: opts.pass,
-		size: opts.size, debug: opts.debug, life: ctx,
+		trust: opts.trust, size: opts.size, debug: opts.debug, life: ctx,
 	}
 	defer sess.stop()
 
@@ -188,6 +199,22 @@ func resolvePassword(flagFile string, t TargetConfig) (string, error) {
 		return readPasswordFile(expandUser(t.PassFile))
 	}
 	return "", fmt.Errorf("no password: pass --pass-file, set $%s, or set password or pass_file under [target] in %s", envTargetPass, configFileName)
+}
+
+func resolveServerTrust(pin string, skipVerify bool) (core.ServerTrust, error) {
+	switch {
+	case pin != "" && skipVerify:
+		return core.ServerTrust{}, errors.New("tls_cert_sha256 pins the RDP server certificate and tls_skip_verify disables checking it; set one, not both")
+	case pin != "":
+		sum, err := core.ParseCertificateSHA256(pin)
+		if err != nil {
+			return core.ServerTrust{}, fmt.Errorf("tls_cert_sha256: %w", err)
+		}
+		return core.TrustPinnedCertificate(sum), nil
+	case skipVerify:
+		return core.TrustAnyCertificate(), nil
+	}
+	return core.TrustSystemRoots(), nil
 }
 
 func readPasswordFile(path string) (string, error) {

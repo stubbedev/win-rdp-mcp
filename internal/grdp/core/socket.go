@@ -29,9 +29,10 @@ type SocketLayer struct {
 	tlsConn    *tls.Conn
 	reader     *bufio.Reader // buffers reads regardless of TLS state
 	serverName string
+	trust      ServerTrust
 }
 
-func NewSocketLayer(conn net.Conn, serverName string) *SocketLayer {
+func NewSocketLayer(conn net.Conn, serverName string, trust ServerTrust) *SocketLayer {
 	// Disable Nagle's algorithm so small DVC responses are sent immediately.
 	if tc, ok := conn.(*net.TCPConn); ok {
 		tc.SetNoDelay(true)
@@ -45,6 +46,7 @@ func NewSocketLayer(conn net.Conn, serverName string) *SocketLayer {
 		conn:       conn,
 		tlsConn:    nil,
 		serverName: serverName,
+		trust:      trust,
 	}
 	l.reader = bufio.NewReaderSize(conn, readBufSize)
 	return l
@@ -73,16 +75,9 @@ func (s *SocketLayer) Close() error {
 }
 
 func (s *SocketLayer) StartTLS() error {
-	config := &tls.Config{
-		InsecureSkipVerify: true,
-		ServerName:         s.serverName,
-		MinVersion:         tls.VersionTLS12,
-		MaxVersion:         tls.VersionTLS12,
-		//		MaxVersion:               tls.VersionTLS13,
-	}
-	tlsConn := tls.Client(s.conn, config)
+	tlsConn := tls.Client(s.conn, s.trust.clientConfig(s.serverName))
 	if err := tlsConn.Handshake(); err != nil {
-		return err
+		return explainHandshakeError(s.serverName, err)
 	}
 	s.tlsConn = tlsConn
 	// Reset the buffered reader to read from the TLS connection.

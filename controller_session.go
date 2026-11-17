@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp"
+	"github.com/stubbedev/win-rdp-mcp/internal/grdp/core"
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp/plugin/cliprdr"
 	"github.com/stubbedev/win-rdp-mcp/internal/grdp/plugin/drdynvc"
 	"github.com/stubbedev/win-rdp-mcp/internal/rdpdr"
@@ -58,6 +59,7 @@ func withDefaultPort(target string) string {
 
 type rdpSession struct {
 	host, user, domain, pass string
+	trust                    core.ServerTrust
 	size                     sessionSize
 	debug                    bool
 
@@ -302,7 +304,7 @@ func (s *rdpSession) prepareDrive() error {
 
 func (s *rdpSession) connect() (*rdpConn, error) {
 	dialer := &net.Dialer{Timeout: dialTimeout}
-	client := grdp.NewRdpClient(s.host, s.size.width, s.size.height, func(addr string) (net.Conn, error) {
+	client := grdp.NewRdpClient(s.host, s.size.width, s.size.height, s.trust, func(addr string) (net.Conn, error) {
 		return dialer.Dial("tcp", addr)
 	})
 	conn := &rdpConn{
@@ -323,6 +325,10 @@ func (s *rdpSession) connect() (*rdpConn, error) {
 		reason := err.Error()
 		if code := client.LastErrorInfo(); code != 0 {
 			reason += " (" + disconnectReason(code) + ")"
+		}
+		var untrusted *core.UntrustedCertificateError
+		if errors.As(err, &untrusted) {
+			reason += "; if that is the certificate you expect, pin it with tls_cert_sha256 = \"" + untrusted.SHA256.String() + "\" under [target] or --tls-cert-sha256"
 		}
 		return nil, fmt.Errorf("RDP connection to %s as %s failed: %s", s.host, s.user, reason)
 	}

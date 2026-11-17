@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stubbedev/win-rdp-mcp/internal/grdp/core"
 )
 
 func TestControlOptionsComeFromTheConfigFile(t *testing.T) {
@@ -86,5 +88,51 @@ func TestControlOptionsNeedATargetAndAPassword(t *testing.T) {
 	}
 	if _, err := parseControlOptions([]string{"--config", empty, "--target", "h", "--user", "u"}); err == nil || !strings.Contains(err.Error(), "no password") {
 		t.Errorf("err = %v, want a missing-password error", err)
+	}
+}
+
+func TestControlServerTrustDefaultsToVerification(t *testing.T) {
+	t.Setenv(envTargetPass, "p")
+	base := "[target]\nhost = \"h\"\nuser = \"u\"\n"
+	pin := strings.Repeat("ab", 32)
+
+	opts, err := parseControlOptions([]string{"--config", writeConfig(t, base)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.trust != core.TrustSystemRoots() {
+		t.Errorf("trust = %+v, want system-root verification by default", opts.trust)
+	}
+
+	sum, err := core.ParseCertificateSHA256(pin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err = parseControlOptions([]string{"--config", writeConfig(t, base+"tls_cert_sha256 = \""+pin+"\"\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.trust != core.TrustPinnedCertificate(sum) {
+		t.Errorf("trust = %+v, want the pinned certificate from the file", opts.trust)
+	}
+
+	opts, err = parseControlOptions([]string{"--config", writeConfig(t, base), "--tls-skip-verify"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.trust != core.TrustAnyCertificate() {
+		t.Errorf("trust = %+v, want verification skipped on --tls-skip-verify", opts.trust)
+	}
+}
+
+func TestControlServerTrustRejectsConflictsAndBadPins(t *testing.T) {
+	t.Setenv(envTargetPass, "p")
+	base := "[target]\nhost = \"h\"\nuser = \"u\"\n"
+	conflict := writeConfig(t, base+"tls_skip_verify = true\n")
+	if _, err := parseControlOptions([]string{"--config", conflict, "--tls-cert-sha256", strings.Repeat("ab", 32)}); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Errorf("err = %v, want a pin-versus-skip conflict", err)
+	}
+	if _, err := parseControlOptions([]string{"--config", writeConfig(t, base), "--tls-cert-sha256", "abcd"}); err == nil || !strings.Contains(err.Error(), "tls_cert_sha256") {
+		t.Errorf("err = %v, want a malformed-pin error", err)
 	}
 }

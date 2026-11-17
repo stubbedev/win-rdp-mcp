@@ -120,6 +120,27 @@ inline `password` is refused unless the file is `chmod 600`. Unknown keys are an
 error, so a typo fails loudly instead of being ignored.
 [`win-rdp-mcp.example.toml`](win-rdp-mcp.example.toml) lists every key.
 
+The RDP server's TLS certificate is verified before the password is sent: it
+must chain to a system root and name the host. Windows ships a self-signed
+certificate, so either give the target a trusted one or pin the one it has:
+
+```toml
+[target]
+tls_cert_sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+```
+
+A refused certificate's SHA-256 is printed in the connection error; check it
+against the target before pinning it, with PowerShell on the target:
+
+```powershell
+Get-ChildItem 'Cert:\LocalMachine\Remote Desktop' | ForEach-Object {
+    [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($_.RawData)) -replace '-'
+}
+```
+
+`tls_skip_verify = true` (or `--tls-skip-verify`) accepts any certificate, which
+hands the password to anyone on the network path.
+
 ### Requirements
 
 Nothing beyond the binary. The controller speaks RDP itself (TLS + NLA/CredSSP,
@@ -254,6 +275,8 @@ The right-hand column is the matching config-file key.
     --agent-exe PATH       Windows agent to push                [target] agent_exe
                            (default: win-rdp-mcp.exe next to this binary, else ./win-rdp-mcp.exe)
     --no-agent             desktop tools only; no agent          [target] no_agent
+    --tls-cert-sha256 HEX  trust only this server certificate    [target] tls_cert_sha256
+    --tls-skip-verify      accept any server certificate (unsafe) [target] tls_skip_verify
 -c, --config PATH          config file (default: see Configuration)
 -d, --debug                log RDP + bootstrap detail
 -a, --enable-all           enable every tool, including destructive tier 3

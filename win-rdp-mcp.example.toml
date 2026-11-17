@@ -30,6 +30,16 @@
 # Desktop tools only; never push the agent.
 # no_agent = false
 
+# The RDP server's TLS certificate must chain to a system root and name the
+# host, unless you say otherwise. Windows ships a self-signed certificate, so
+# either install a trusted one on the target or pin the one it has by its
+# SHA-256 fingerprint. A refused connection prints it; confirm it on the target:
+#   Get-ChildItem 'Cert:\LocalMachine\Remote Desktop' | ForEach-Object {
+#     [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($_.RawData)) -replace '-' }
+# tls_cert_sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+# Accept any certificate. Anyone on the network path can then read the password.
+# tls_skip_verify = false
+
 [server]
 # 127.0.0.1 keeps the server reachable only from this machine. Use 0.0.0.0 to
 # serve it on the network — but then auth_key below stops being optional.
