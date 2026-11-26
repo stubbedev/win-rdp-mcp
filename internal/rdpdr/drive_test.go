@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -102,6 +104,10 @@ func TestHandshakeAnnouncesDriveAfterLogon(t *testing.T) {
 	if dos := string(bytes.TrimRight(ann.take(8), "\x00")); dos != "mcp" {
 		t.Fatalf("dos name %q, want mcp", dos)
 	}
+	fullName := ann.take(int(ann.u32()))
+	if want := []byte{'m', 0, 'c', 0, 'p', 0, 0, 0}; !bytes.Equal(fullName, want) {
+		t.Fatalf("device data % x, want the null-terminated UTF-16 name % x", fullName, want)
+	}
 
 	d.Process(packet(componentCore, packetUserLoggedOn))
 	if len(c.packets) != 0 {
@@ -131,10 +137,10 @@ type ioReply struct {
 	body   *reader
 }
 
-func irp(d *Drive, c *capture, t *testing.T, fileID, major, minor uint32, body []byte) ioReply {
+func irp(d *Drive, c *capture, t *testing.T, fileID uint32, major irpMajor, minor uint32, body []byte) ioReply {
 	t.Helper()
 	d.Process(packet(componentCore, packetDeviceIORequest,
-		le32(driveDeviceID), le32(fileID), le32(99), le32(major), le32(minor), body))
+		le32(driveDeviceID), le32(fileID), le32(99), le32(uint32(major)), le32(minor), body))
 	r := &reader{buf: c.take(t)}
 	r.u16()
 	if r.u16() != packetDeviceIOResponse {
@@ -230,10 +236,10 @@ func TestCreateDispositions(t *testing.T) {
 		want        ntStatus
 	}{
 		{`\exists`, dispositionCreate, statusObjectNameCollision},
-		{`\missing`, dispositionOpen, statusNoSuchFile},
+		{`\missing`, dispositionOpen, statusObjectNameNotFound},
 		{`\nodir\missing`, dispositionOpen, statusObjectPathNotFound},
 		{`\nodir\missing`, dispositionCreate, statusObjectPathNotFound},
-		{`\missing`, dispositionOverwrite, statusNoSuchFile},
+		{`\missing`, dispositionOverwrite, statusObjectNameNotFound},
 		{`\exists`, dispositionOpen, statusSuccess},
 		{`\fresh`, dispositionOpenIf, statusSuccess},
 	}
@@ -407,5 +413,109 @@ func TestNewDriveRejectsBadNames(t *testing.T) {
 		if _, err := NewDrive(name, t.TempDir()); err == nil {
 			t.Errorf("NewDrive(%q) accepted an invalid name", name)
 		}
+	}
+}
+
+func TestShareRootOpensWithEmptyOrBackslashPath(t *testing.T) {
+	d, c, _ := newTestDrive(t)
+	for _, p := range []string{"", `\`} {
+		id, status := open(t, d, c, p, 0, dispositionOpen, optionDirectoryFile)
+		if status != statusSuccess || id == 0 {
+			t.Fatalf("opening the share root as %q: status %s, file %d", p, status, id)
+		}
+	}
+}
+
+func TestEveryIRPIsCompleted(t *testing.T) {
+	d, c, _ := newTestDrive(t)
+	root, _ := open(t, d, c, `\`, 0, dispositionOpen, optionDirectoryFile)
+
+	var notify writer
+	notify.u8(0)
+	notify.u32(0x17)
+	notify.zeros(27)
+
+	var ioctl writer
+	ioctl.u32(64)
+	ioctl.u32(0)
+	ioctl.u32(0x000900A8)
+	ioctl.zeros(20)
+
+	var setVolume writer
+	setVolume.u32(2)
+	setVolume.u32(10)
+	setVolume.zeros(24)
+	setVolume.zeros(10)
+
+	cases := []struct {
+		name         string
+		major        irpMajor
+		minor        uint32
+		body         []byte
+		status       ntStatus
+		lengthWanted bool
+		length       uint32
+	}{
+		{"notify change directory", irpDirectoryControl, minorNotifyChangeDirectory, notify.buf, statusNotSupported, true, 0},
+		{"device control", irpDeviceControl, 0, ioctl.buf, statusSuccess, true, 0},
+		{"set volume information", irpSetVolumeInfo, 0, setVolume.buf, statusNotSupported, true, 10},
+		{"unknown major", irpMajor(0x14), 0, nil, statusNotSupported, false, 0},
+	}
+	for _, tc := range cases {
+		rep := irp(d, c, t, root, tc.major, tc.minor, tc.body)
+		if rep.status != tc.status {
+			t.Errorf("%s: status %s, want %s", tc.name, rep.status, tc.status)
+		}
+		if !tc.lengthWanted {
+			continue
+		}
+		if got := rep.body.u32(); rep.body.err != nil || got != tc.length {
+			t.Errorf("%s: length %d (%v), want %d", tc.name, got, rep.body.err, tc.length)
+		}
+	}
+}
+
+func TestIRPsAreLoggedWithClassPathAndStatus(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	d, c, dir := newTestDrive(t)
+	if err := os.WriteFile(filepath.Join(dir, "agent.exe"), []byte("MZ"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	open(t, d, c, `\missing.exe`, 0, dispositionOpen, 0)
+	id, _ := open(t, d, c, `\agent.exe`, 0, dispositionOpen, 0)
+	var q writer
+	q.u32(fileAttributeTagInformation)
+	q.u32(0)
+	q.zeros(24)
+	irp(d, c, t, id, irpQueryInformation, 0, q.buf)
+
+	want := []string{
+		`msg="rdpdr: irp" major=CREATE minor=0 file=0 path=missing.exe status=0xC0000034`,
+		`msg="rdpdr: irp" major=CREATE minor=0 file=0 path=agent.exe status=0x00000000`,
+		`msg="rdpdr: irp" major=QUERY_INFORMATION minor=0 file=1 path=agent.exe class=35 status=0x00000000`,
+	}
+	for _, line := range want {
+		if !strings.Contains(logs.String(), line) {
+			t.Errorf("log lacks %q; got:\n%s", line, logs.String())
+		}
+	}
+}
+
+func TestMalformedIRPStillCompletes(t *testing.T) {
+	d, c, _ := newTestDrive(t)
+	var truncated writer
+	truncated.u32(0)
+	truncated.u64(0)
+	truncated.u32(0)
+	truncated.u32(7)
+	truncated.u32(dispositionOpen)
+	truncated.u32(0)
+	truncated.u32(200)
+	if rep := irp(d, c, t, 0, irpCreate, 0, truncated.buf); rep.status != statusInvalidParameter {
+		t.Fatalf("truncated create: status %s, want %s", rep.status, statusInvalidParameter)
 	}
 }

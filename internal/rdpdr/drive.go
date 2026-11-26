@@ -3,6 +3,7 @@ package rdpdr
 import (
 	"cmp"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -51,18 +52,44 @@ const (
 	maxReadLength        = 16 << 20
 )
 
-const (
-	irpCreate           = 0x00
-	irpClose            = 0x02
-	irpRead             = 0x03
-	irpWrite            = 0x04
-	irpQueryInformation = 0x05
-	irpSetInformation   = 0x06
-	irpQueryVolumeInfo  = 0x0A
-	irpDirectoryControl = 0x0C
-	irpDeviceControl    = 0x0E
-	irpLockControl      = 0x11
+type irpMajor uint32
 
+const (
+	irpCreate           irpMajor = 0x00
+	irpClose            irpMajor = 0x02
+	irpRead             irpMajor = 0x03
+	irpWrite            irpMajor = 0x04
+	irpQueryInformation irpMajor = 0x05
+	irpSetInformation   irpMajor = 0x06
+	irpQueryVolumeInfo  irpMajor = 0x0A
+	irpSetVolumeInfo    irpMajor = 0x0B
+	irpDirectoryControl irpMajor = 0x0C
+	irpDeviceControl    irpMajor = 0x0E
+	irpLockControl      irpMajor = 0x11
+)
+
+var irpMajorNames = map[irpMajor]string{
+	irpCreate:           "CREATE",
+	irpClose:            "CLOSE",
+	irpRead:             "READ",
+	irpWrite:            "WRITE",
+	irpQueryInformation: "QUERY_INFORMATION",
+	irpSetInformation:   "SET_INFORMATION",
+	irpQueryVolumeInfo:  "QUERY_VOLUME_INFORMATION",
+	irpSetVolumeInfo:    "SET_VOLUME_INFORMATION",
+	irpDirectoryControl: "DIRECTORY_CONTROL",
+	irpDeviceControl:    "DEVICE_CONTROL",
+	irpLockControl:      "LOCK_CONTROL",
+}
+
+func (m irpMajor) String() string {
+	if name, ok := irpMajorNames[m]; ok {
+		return name
+	}
+	return fmt.Sprintf("0x%02X", uint32(m))
+}
+
+const (
 	minorQueryDirectory        = 0x01
 	minorNotifyChangeDirectory = 0x02
 )
@@ -135,10 +162,6 @@ func (d *Drive) Process(data []byte) {
 	}
 }
 
-func unsupported(what string, req ioRequest, detail uint32) {
-	slog.Info("rdpdr: unsupported request", "what", what, "major", req.major, "minor", req.minor, "class", detail)
-}
-
 func (d *Drive) send(w writer) error {
 	if d.sender == nil {
 		return errors.New("rdpdr: no channel sender attached")
@@ -160,6 +183,9 @@ func (d *Drive) processLocked(data []byte) error {
 	}
 	if component != componentCore {
 		return fmt.Errorf("unknown component 0x%04x", component)
+	}
+	if packetID != packetDeviceIORequest {
+		slog.Info("rdpdr: core packet", "packet", fmt.Sprintf("0x%04X", packetID), "len", len(data))
 	}
 	switch packetID {
 	case packetServerAnnounce:
@@ -251,9 +277,9 @@ func (d *Drive) announceDevices() error {
 	dos := make([]byte, 8)
 	copy(dos, d.name)
 	w.bytes(dos)
-	w.u32(uint32(len(d.name) + 1))
-	w.bytes([]byte(d.name))
-	w.u8(0)
+	fullName := encodeUTF16(d.name, true)
+	w.u32(uint32(len(fullName)))
+	w.bytes(fullName)
 	return d.send(w)
 }
 
@@ -262,6 +288,7 @@ func (d *Drive) onDeviceReply(r *reader) error {
 	if r.err != nil {
 		return &packetError{"device reply", r.err}
 	}
+	slog.Info("rdpdr: device announce reply", "device", deviceID, "status", ntStatus(result))
 	if result != 0 {
 		return fmt.Errorf("server rejected redirected drive %q (device %d): status 0x%08x", d.name, deviceID, result)
 	}
@@ -282,8 +309,11 @@ func (d *Drive) closeAllLocked() {
 
 type ioRequest struct {
 	deviceID, fileID, completionID uint32
-	major, minor                   uint32
+	major                          irpMajor
+	minor                          uint32
 }
+
+const ioStatusOffset = 12
 
 func (req ioRequest) reply(status ntStatus) writer {
 	w := header(componentCore, packetDeviceIOResponse)
@@ -293,56 +323,125 @@ func (req ioRequest) reply(status ntStatus) writer {
 	return w
 }
 
+func ioStatus(resp writer) ntStatus {
+	return ntStatus(binary.LittleEndian.Uint32(resp.buf[ioStatusOffset:]))
+}
+
+type irpTrace struct {
+	path  string
+	attrs []any
+}
+
+func (t *irpTrace) informationClass(r *reader) (uint32, error) {
+	class := r.u32()
+	if r.err != nil {
+		return 0, &packetError{"information class", r.err}
+	}
+	t.attrs = append(t.attrs, "class", class)
+	return class, nil
+}
+
 func (d *Drive) onIORequest(r *reader) error {
-	req := ioRequest{deviceID: r.u32(), fileID: r.u32(), completionID: r.u32(), major: r.u32(), minor: r.u32()}
+	req := ioRequest{deviceID: r.u32(), fileID: r.u32(), completionID: r.u32(), major: irpMajor(r.u32()), minor: r.u32()}
 	if r.err != nil {
 		return &packetError{"device I/O request", r.err}
 	}
-	if req.deviceID != driveDeviceID {
-		return d.send(req.reply(statusNoSuchDevice))
+	trace := irpTrace{}
+	if f, ok := d.file(req.fileID); ok {
+		trace.path = f.rel
 	}
-	var resp writer
-	var err error
+	resp, err := d.dispatch(req, r, &trace)
+	attrs := append([]any{"major", req.major, "minor", req.minor, "file", req.fileID, "path", trace.path}, trace.attrs...)
+	if err != nil {
+		resp = req.reply(statusInvalidParameter)
+		slog.Warn("rdpdr: malformed irp", append(attrs, "err", err, "status", ioStatus(resp))...)
+		return d.send(resp)
+	}
+	slog.Info("rdpdr: irp", append(attrs, "status", ioStatus(resp))...)
+	return d.send(resp)
+}
+
+func (d *Drive) dispatch(req ioRequest, r *reader, trace *irpTrace) (writer, error) {
+	if req.deviceID != driveDeviceID {
+		return req.reply(statusNoSuchDevice), nil
+	}
 	switch req.major {
 	case irpCreate:
-		resp, err = d.create(req, r)
+		resp, rel, err := d.create(req, r)
+		trace.path = rel
+		return resp, err
 	case irpClose:
-		resp = d.closeFile(req)
+		return d.closeFile(req), nil
 	case irpRead:
-		resp, err = d.read(req, r)
+		return d.read(req, r)
 	case irpWrite:
-		resp, err = d.write(req, r)
+		return d.write(req, r)
 	case irpQueryInformation:
-		resp, err = d.queryInformation(req, r)
+		class, err := trace.informationClass(r)
+		if err != nil {
+			return writer{}, err
+		}
+		return d.queryInformation(req, class), nil
 	case irpSetInformation:
-		resp, err = d.setInformation(req, r)
+		class, err := trace.informationClass(r)
+		if err != nil {
+			return writer{}, err
+		}
+		return d.setInformation(req, class, r)
 	case irpQueryVolumeInfo:
-		resp, err = d.queryVolume(req, r)
+		class, err := trace.informationClass(r)
+		if err != nil {
+			return writer{}, err
+		}
+		return d.queryVolume(req, class), nil
+	case irpSetVolumeInfo:
+		if _, err := trace.informationClass(r); err != nil {
+			return writer{}, err
+		}
+		length := r.u32()
+		if r.err != nil {
+			return writer{}, &packetError{"set volume information request", r.err}
+		}
+		resp := req.reply(statusNotSupported)
+		resp.u32(length)
+		return resp, nil
 	case irpDirectoryControl:
-		if req.minor == minorNotifyChangeDirectory {
-			return nil
-		}
-		if req.minor != minorQueryDirectory {
-			unsupported("directory control", req, 0)
-			resp = req.reply(statusNotSupported)
-			resp.u32(0)
-			break
-		}
-		resp, err = d.queryDirectory(req, r)
+		return d.directoryControl(req, r, trace)
 	case irpDeviceControl:
-		resp = req.reply(statusSuccess)
+		r.u32()
+		r.u32()
+		code := r.u32()
+		if r.err != nil {
+			return writer{}, &packetError{"device control request", r.err}
+		}
+		trace.attrs = append(trace.attrs, "ioctl", fmt.Sprintf("0x%08X", code))
+		resp := req.reply(statusSuccess)
 		resp.u32(0)
+		return resp, nil
 	case irpLockControl:
-		resp = req.reply(statusSuccess)
+		resp := req.reply(statusSuccess)
 		resp.zeros(5)
-	default:
-		unsupported("major function", req, 0)
-		resp = req.reply(statusNotSupported)
+		return resp, nil
 	}
-	if err != nil {
-		return err
+	return req.reply(statusNotSupported), nil
+}
+
+func (d *Drive) directoryControl(req ioRequest, r *reader, trace *irpTrace) (writer, error) {
+	switch req.minor {
+	case minorQueryDirectory:
+		class, err := trace.informationClass(r)
+		if err != nil {
+			return writer{}, err
+		}
+		return d.queryDirectory(req, class, r, trace)
+	case minorNotifyChangeDirectory:
+		resp := req.reply(statusNotSupported)
+		resp.u32(0)
+		return resp, nil
 	}
-	return d.send(resp)
+	resp := req.reply(statusNotSupported)
+	resp.u32(0)
+	return resp, nil
 }
 
 func (d *Drive) file(id uint32) (*openFile, bool) {
@@ -372,7 +471,7 @@ func (d *Drive) notFound(rel string) ntStatus {
 	if d.parentMissing(rel) {
 		return statusObjectPathNotFound
 	}
-	return statusNoSuchFile
+	return statusObjectNameNotFound
 }
 
 const (
@@ -405,7 +504,7 @@ func wantsWrite(access uint32) bool {
 	return access&(accessWriteData|accessAppendData|accessGenericWr|accessGenericAll|accessMaximum) != 0
 }
 
-func (d *Drive) create(req ioRequest, r *reader) (writer, error) {
+func (d *Drive) create(req ioRequest, r *reader) (writer, string, error) {
 	access := r.u32()
 	r.skip(8)
 	r.u32()
@@ -415,7 +514,7 @@ func (d *Drive) create(req ioRequest, r *reader) (writer, error) {
 	pathLen := r.u32()
 	rel := cleanPath(r.utf16z(int(pathLen)))
 	if r.err != nil {
-		return writer{}, &packetError{"create request", r.err}
+		return writer{}, "", &packetError{"create request", r.err}
 	}
 
 	f, info, status := d.open(rel, access, disposition, options)
@@ -423,14 +522,14 @@ func (d *Drive) create(req ioRequest, r *reader) (writer, error) {
 	if status != statusSuccess {
 		resp.u32(0)
 		resp.u8(0)
-		return resp, nil
+		return resp, rel, nil
 	}
 	d.nextFileID++
 	id := d.nextFileID
 	d.files[id] = f
 	resp.u32(id)
 	resp.u8(info)
-	return resp, nil
+	return resp, rel, nil
 }
 
 func (d *Drive) open(rel string, access, disposition, options uint32) (*openFile, uint8, ntStatus) {
@@ -621,22 +720,18 @@ func attributes(fi fs.FileInfo) uint32 {
 	return a
 }
 
-func (d *Drive) queryInformation(req ioRequest, r *reader) (writer, error) {
-	class := r.u32()
-	if r.err != nil {
-		return writer{}, &packetError{"query information request", r.err}
-	}
+func (d *Drive) queryInformation(req ioRequest, class uint32) writer {
 	f, ok := d.file(req.fileID)
 	if !ok {
 		resp := req.reply(statusInvalidHandle)
 		resp.u32(0)
-		return resp, nil
+		return resp
 	}
 	fi, err := f.stat()
 	if err != nil {
 		resp := req.reply(statusFor(err))
 		resp.u32(0)
-		return resp, nil
+		return resp
 	}
 	var body writer
 	mtime := filetime(fi.ModTime())
@@ -657,19 +752,17 @@ func (d *Drive) queryInformation(req ioRequest, r *reader) (writer, error) {
 		body.u32(attributes(fi))
 		body.u32(0)
 	default:
-		unsupported("query information", req, class)
 		resp := req.reply(statusInvalidInfoClass)
 		resp.u32(0)
-		return resp, nil
+		return resp
 	}
 	resp := req.reply(statusSuccess)
 	resp.u32(uint32(len(body.buf)))
 	resp.bytes(body.buf)
-	return resp, nil
+	return resp
 }
 
-func (d *Drive) setInformation(req ioRequest, r *reader) (writer, error) {
-	class := r.u32()
+func (d *Drive) setInformation(req ioRequest, class uint32, r *reader) (writer, error) {
 	length := r.u32()
 	r.skip(24)
 	body := &reader{buf: r.take(int(length))}
@@ -718,7 +811,6 @@ func (d *Drive) setInformation(req ioRequest, r *reader) (writer, error) {
 		}
 		return reply(f.rename(target, replace)), nil
 	}
-	unsupported("set information", req, class)
 	return reply(statusInvalidInfoClass), nil
 }
 
@@ -740,11 +832,7 @@ const (
 	sectorsPerAllocationUnits = 8
 )
 
-func (d *Drive) queryVolume(req ioRequest, r *reader) (writer, error) {
-	class := r.u32()
-	if r.err != nil {
-		return writer{}, &packetError{"query volume request", r.err}
-	}
+func (d *Drive) queryVolume(req ioRequest, class uint32) writer {
 	var body writer
 	switch class {
 	case fileFsVolumeInformation:
@@ -757,9 +845,10 @@ func (d *Drive) queryVolume(req ioRequest, r *reader) (writer, error) {
 	case fileFsSizeInformation, fileFsFullSizeInformation:
 		total, free, err := diskSpace(d.dir)
 		if err != nil {
+			slog.Warn("rdpdr: reading disk space of the redirected drive", "dir", d.dir, "err", err)
 			resp := req.reply(statusFor(err))
 			resp.u32(0)
-			return resp, nil
+			return resp
 		}
 		unit := uint64(bytesPerSector * sectorsPerAllocationUnits)
 		body.u64(total / unit)
@@ -779,19 +868,17 @@ func (d *Drive) queryVolume(req ioRequest, r *reader) (writer, error) {
 		body.u32(fileDeviceDisk)
 		body.u32(0)
 	default:
-		unsupported("query volume", req, class)
 		resp := req.reply(statusInvalidInfoClass)
 		resp.u32(0)
-		return resp, nil
+		return resp
 	}
 	resp := req.reply(statusSuccess)
 	resp.u32(uint32(len(body.buf)))
 	resp.bytes(body.buf)
-	return resp, nil
+	return resp
 }
 
-func (d *Drive) queryDirectory(req ioRequest, r *reader) (writer, error) {
-	class := r.u32()
+func (d *Drive) queryDirectory(req ioRequest, class uint32, r *reader, trace *irpTrace) (writer, error) {
 	initial := r.u8() != 0
 	pathLen := r.u32()
 	r.skip(23)
@@ -799,6 +886,7 @@ func (d *Drive) queryDirectory(req ioRequest, r *reader) (writer, error) {
 	if r.err != nil {
 		return writer{}, &packetError{"query directory request", r.err}
 	}
+	trace.attrs = append(trace.attrs, "query", query, "initial", initial)
 	empty := func(status ntStatus) writer {
 		resp := req.reply(status)
 		resp.u32(0)
@@ -811,7 +899,6 @@ func (d *Drive) queryDirectory(req ioRequest, r *reader) (writer, error) {
 	}
 	if !slices.Contains([]uint32{fileDirectoryInformation, fileFullDirectoryInformation,
 		fileBothDirectoryInformation, fileNamesInformation}, class) {
-		unsupported("query directory", req, class)
 		return empty(statusInvalidInfoClass), nil
 	}
 	if initial {
