@@ -210,14 +210,19 @@ type ChannelTransport interface {
 }
 type ChannelClient struct {
 	ChannelDef
-	t ChannelTransport
+	t          ChannelTransport
+	reassembly *chunkReassembly
+}
+
+type chunkReassembly struct {
+	buf    bytes.Buffer
+	active bool
 }
 
 type Channels struct {
 	emission.Emitter
 	channels      map[string]ChannelClient
 	transport     core.Transport
-	buff          *bytes.Buffer
 	channelSender core.ChannelSender
 }
 
@@ -226,7 +231,6 @@ func NewChannels(t core.Transport) *Channels {
 		Emitter:   *emission.NewEmitter(),
 		channels:  make(map[string]ChannelClient, 20),
 		transport: t,
-		buff:      &bytes.Buffer{},
 	}
 	t.On("channel", c.process)
 	return c
@@ -243,7 +247,7 @@ func (c *Channels) Register(t ChannelTransport) {
 		return
 	}
 	t.Sender(c)
-	c.channels[name] = ChannelClient{ChannelDef{name, option}, t}
+	c.channels[name] = ChannelClient{ChannelDef{name, option}, t, &chunkReassembly{}}
 }
 
 func (c *Channels) SendToChannel(channel string, s []byte) (int, error) {
@@ -258,6 +262,7 @@ func (c *Channels) SendToChannel(channel string, s []byte) (int, error) {
 		baseFlag |= CHANNEL_FLAG_SHOW_PROTOCOL
 	}
 	buf := chunkBufPool.Get().([]byte)
+	defer func() { chunkBufPool.Put(buf[:0]) }()
 	first := true
 	remaining := totalLen
 	for chunk := range slices.Chunk(s, CHANNEL_CHUNK_LENGTH) {
@@ -275,10 +280,11 @@ func (c *Channels) SendToChannel(channel string, s []byte) (int, error) {
 		binary.LittleEndian.PutUint32(buf[0:], uint32(totalLen))
 		binary.LittleEndian.PutUint32(buf[4:], flag)
 		copy(buf[8:], chunk)
-		c.channelSender.SendToChannel(channel, buf)
+		if _, err := c.channelSender.SendToChannel(channel, buf); err != nil {
+			return totalLen - remaining - len(chunk), fmt.Errorf("sending a %d-byte chunk of a %d-byte %s message: %w", len(chunk), totalLen, channel, err)
+		}
 	}
-	chunkBufPool.Put(buf[:0])
-	return 0, nil
+	return totalLen, nil
 }
 
 func (c *Channels) process(channel string, s []byte) {
@@ -288,21 +294,36 @@ func (c *Channels) process(channel string, s []byte) {
 		return
 	}
 	if len(s) < 8 {
+		slog.Warn("dropping a virtual channel PDU shorter than its header", "channel", channel, "len", len(s))
 		return
 	}
-	// Parse 8-byte header directly: totalLen(4) + flags(4)
-	flags := uint32(s[4]) | uint32(s[5])<<8 | uint32(s[6])<<16 | uint32(s[7])<<24
+	totalLen := binary.LittleEndian.Uint32(s[0:])
+	flags := binary.LittleEndian.Uint32(s[4:])
 	payload := s[8:]
-	if flags&CHANNEL_FLAG_FIRST == 0 || flags&CHANNEL_FLAG_LAST == 0 {
-		if flags&CHANNEL_FLAG_FIRST != 0 {
-			c.buff.Reset()
-		}
-		c.buff.Write(payload)
-		if flags&CHANNEL_FLAG_LAST == 0 {
-			return
-		}
-		cli.t.Process(c.buff.Bytes())
-	} else {
+	first, last := flags&CHANNEL_FLAG_FIRST != 0, flags&CHANNEL_FLAG_LAST != 0
+	if first && last {
 		cli.t.Process(payload)
+		return
 	}
+	re := cli.reassembly
+	switch {
+	case first:
+		re.buf.Reset()
+		re.active = true
+	case !re.active:
+		slog.Warn("dropping a virtual channel chunk that continues no message", "channel", channel, "flags", flags, "len", len(payload))
+		return
+	}
+	re.buf.Write(payload)
+	if !last {
+		return
+	}
+	re.active = false
+	data := re.buf.Bytes()
+	if uint32(len(data)) != totalLen {
+		slog.Warn("dropping a reassembled virtual channel message whose length disagrees with its header",
+			"channel", channel, "got", len(data), "want", totalLen)
+		return
+	}
+	cli.t.Process(data)
 }
