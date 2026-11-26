@@ -239,7 +239,7 @@ these in your `nix.conf`:
 
 ```
 extra-substituters = https://xilos.dev/c/stubbedev/main
-extra-trusted-public-keys = default:9P4FePqHV1rGv5NDBun0GN26y83pcaaMr/NHZrxKaac=
+extra-trusted-public-keys = xilos.dev/stubbedev/main-1:397R6S49v/FSvP+mZ3HlKrVN1KXhgzHIEIHxA/UuG6Y=
 ```
 
 ### Go
